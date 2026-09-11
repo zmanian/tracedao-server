@@ -15,7 +15,7 @@
 
 [package]
 name = "trace-commons-contributor-gtk"
-version = "0.12.1"
+version = "0.12.2"
 edition = "2024"
 # Tracks the root workspace's floor by hand -- this crate is deliberately not
 # a member of it, so `rust-version.workspace = true` is unavailable. Raised

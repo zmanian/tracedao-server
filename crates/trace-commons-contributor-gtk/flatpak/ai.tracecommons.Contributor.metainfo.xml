@@ -62,6 +62,13 @@
   </provides>
 
   <releases>
+    <release version="0.12.2" date="2026-09-10">
+      <description>
+        <p>Choose GitHub, Google or a NEAR wallet when signing in to NEAR AI. Wallet sign-in requests a login message, not a transaction.</p>
+        <p>Open Cloud billing for the organization associated with your inference key, with an account check before opening the browser.</p>
+        <p>Tool cards and account sign-in explanations are clearer across the desktop apps.</p>
+      </description>
+    </release>
     <release version="0.12.1" date="2026-09-10">
       <description>
         <p>Route AI requests through NEAR AI. Private AI now starts with sign-in when you are signed out, with clearer controls and status messages across Linux, macOS and Windows.</p>

@@ -4788,7 +4788,7 @@ version = "0.1.0"
 
 [[package]]
 name = "trace-commons-contributor"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -4826,7 +4826,7 @@ dependencies = [
 
 [[package]]
 name = "trace-commons-contributor-gtk"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "anyhow",
  "async-channel",
