@@ -167,6 +167,8 @@ pub const TRACE_COMMONS_RLS_TABLES: &[&str] = &[
     "trace_credit_ledger",
     "trace_tombstones",
     "trace_withdrawals",
+    "trace_token_bundles",
+    "trace_token_attachments",
     "trace_vector_entries",
     "trace_export_manifests",
     "trace_export_manifest_items",
@@ -1261,6 +1263,26 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         63,
         "near_ai_login_provisioning",
         include_str!("../../../../migrations/V63__near_ai_login_provisioning.sql"),
+    ),
+    (
+        64,
+        "token_distribution_bundles",
+        include_str!("../../../../migrations/V64__token_distribution_bundles.sql"),
+    ),
+    (
+        65,
+        "token_bundle_processing",
+        include_str!("../../../../migrations/V65__token_bundle_processing.sql"),
+    ),
+    (
+        66,
+        "token_processing_retry",
+        include_str!("../../../../migrations/V66__token_processing_retry.sql"),
+    ),
+    (
+        67,
+        "token_rescrub_revocation",
+        include_str!("../../../../migrations/V67__token_rescrub_revocation.sql"),
     ),
 ];
 
@@ -6300,6 +6322,7 @@ mod tests {
             include_str!("../../../../migrations/V43__trace_withdrawal.sql"),
             include_str!("../../../../migrations/V56__community_withdrawal_eviction_rls.sql"),
             include_str!("../../../../migrations/V58__near_account_provisioning.sql"),
+            include_str!("../../../../migrations/V64__token_distribution_bundles.sql"),
         ];
         let force_rls_migrations = [
             include_str!("../../../../migrations/V6__trace_force_rls.sql"),
@@ -6318,6 +6341,7 @@ mod tests {
             include_str!("../../../../migrations/V43__trace_withdrawal.sql"),
             include_str!("../../../../migrations/V56__community_withdrawal_eviction_rls.sql"),
             include_str!("../../../../migrations/V58__near_account_provisioning.sql"),
+            include_str!("../../../../migrations/V64__token_distribution_bundles.sql"),
         ];
 
         for table in TRACE_COMMONS_RLS_TABLES {

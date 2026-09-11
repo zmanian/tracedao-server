@@ -60,6 +60,9 @@ public sealed class DaemonSettingsSnapshot
     [JsonPropertyName("admission_evidence_required")]
     public bool? AdmissionEvidenceRequired { get; set; }
 
+    [JsonPropertyName("token_distributions_contribution")] public bool? ProbabilityContributionAllowed { get; init; }
+    [JsonPropertyName("token_storage")] public ProbabilityStorageView? ProbabilityStorage { get; set; }
+    public bool ProbabilityContributionEnabled => ProbabilityContributionAllowed == true;
     [JsonPropertyName("ironwire_attested_bodies")]
     public bool? IronwireAttestedBodies { get; set; }
     public bool InferenceEvidenceEnabled => IronwireAttestedBodies == true;
@@ -290,4 +293,19 @@ public sealed class AuditSettingEntry
 
     [JsonPropertyName("project_label")]
     public string? ProjectLabel { get; set; }
+}
+
+public sealed class ProbabilityStorageView {
+    [JsonPropertyName("capture_enabled")] public bool CaptureEnabled { get; set; }
+    [JsonPropertyName("capture_label")] public string CaptureLabel { get; set; } = "";
+    [JsonPropertyName("capture_confirmation")] public string CaptureConfirmation { get; set; } = "";
+    [JsonPropertyName("capture_notice")] public string CaptureNotice { get; set; } = "";
+    [JsonPropertyName("state_line")] public string StateLine { get; set; } = "";
+    [JsonPropertyName("scope_note")] public string ScopeNote { get; set; } = "";
+    [JsonPropertyName("cleanup_label")] public string CleanupLabel { get; set; } = "";
+    [JsonPropertyName("discard_label")] public string DiscardLabel { get; set; } = "";
+    [JsonPropertyName("discard_confirmation")] public string DiscardConfirmation { get; set; } = "";
+    [JsonPropertyName("cancel_label")] public string CancelLabel { get; set; } = "";
+    [JsonPropertyName("confirm_label")] public string ConfirmLabel { get; set; } = "";
+    [JsonPropertyName("failure_line")] public string FailureLine { get; set; } = "";
 }

@@ -161,6 +161,17 @@ public struct WitnessCopy: Decodable, Equatable, Sendable {
     /// this machine.
     public let clearNote: String
     public let appliesAtOnce: String
+    public let tokenHeading: String?
+    public let tokenDisclosure: String?
+    public let tokenCaptureNote: String?
+    public let tokenScopeNote: String?
+    public let tokenEnable: String?
+    public let tokenDisable: String?
+    public let tokenConfirm: String?
+    public let tokenCancel: String?
+    public let tokenEnabled: String?
+    public let tokenDisabled: String?
+    public let tokenSaveFailed: String?
     public let inferenceHeading: String
     public let inferenceDisclosure: String
     public let inferenceCaptureNote: String
@@ -191,6 +202,17 @@ public struct WitnessCopy: Decodable, Equatable, Sendable {
         case clear
         case clearNote = "clear_note"
         case appliesAtOnce = "applies_at_once"
+        case tokenHeading = "token_heading"
+        case tokenDisclosure = "token_disclosure"
+        case tokenCaptureNote = "token_capture_note"
+        case tokenScopeNote = "token_scope_note"
+        case tokenEnable = "token_enable"
+        case tokenDisable = "token_disable"
+        case tokenConfirm = "token_confirm"
+        case tokenCancel = "token_cancel"
+        case tokenEnabled = "token_enabled"
+        case tokenDisabled = "token_disabled"
+        case tokenSaveFailed = "token_save_failed"
         case inferenceHeading = "inference_heading"
         case inferenceDisclosure = "inference_disclosure"
         case inferenceCaptureNote = "inference_capture_note"

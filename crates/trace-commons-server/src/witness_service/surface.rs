@@ -268,6 +268,55 @@ impl WitnessService {
         .await)
     }
 
+    /// Explicit bundle route; source attestation and separate consent are required.
+    pub async fn witness_token_bundle(
+        &self,
+        mut request: WitnessContributionRequest,
+        options: super::token_bundle::TokenBundleOptions,
+    ) -> Result<super::token_bundle::WitnessTokenBundle, WitnessError> {
+        let trust = self
+            .admission_provider_trust
+            .as_ref()
+            .ok_or(WitnessError::InferenceAttestationMissing)?;
+        let receipt = request
+            .offered_receipt
+            .as_ref()
+            .ok_or(WitnessError::InferenceAttestationMissing)?;
+        let call = crate::admission_evidence::verify_admission_call(
+            &request.raw_contribution,
+            receipt,
+            trust,
+            chrono::Utc::now().timestamp(),
+            self.inference_policy.max_body_bytes(),
+        )
+        .map_err(|_| WitnessError::ArtifactBindingFailed)?;
+        call.restrict_contribution(&mut request.raw_contribution)
+            .map_err(|_| WitnessError::ArtifactBindingFailed)?;
+        let redactor = self
+            .contribution_redactor
+            .as_ref()
+            .ok_or(WitnessError::RedactionFailed)?;
+        let mut response = super::token_bundle::witness_token_bundle(
+            request,
+            options,
+            &self.inference_policy,
+            redactor.as_ref(),
+            self.redactor.as_ref(),
+            self.signer.as_ref(),
+            self.enclave.as_ref(),
+        )
+        .await?;
+        response.admission = Some(
+            call.certify(
+                &response.contribution,
+                self.signer.as_ref(),
+                chrono::Utc::now().timestamp(),
+            )
+            .map_err(|_| WitnessError::ArtifactBindingFailed)?,
+        );
+        Ok(response)
+    }
+
     pub fn with_admission_provider_trust(
         mut self,
         trust: crate::admission_evidence::AdmissionProviderTrust,

@@ -57,7 +57,7 @@ pub enum Withdrawal {
     /// The server withdrew it, and reported this tier. `None` means the
     /// daemon sent a label this build does not know -- reported as
     /// not-knowable, never smoothed into the mild answer.
-    Done(Option<String>),
+    Done(Option<String>, Option<String>),
     /// It did not happen. Carries the daemon's fixed label, which by
     /// contract is never a path, a token, or a response body.
     Failed(String),
@@ -716,12 +716,16 @@ fn withdraw_control(app: &Rc<App>, record: &HistoryRecord) -> gtk::Box {
             row.append(&progress);
             return row;
         }
-        Some(Withdrawal::Done(reach)) => {
+        Some(Withdrawal::Done(reach, note)) => {
             // Never a generic "withdrawn": this sentence names the tier the
             // server actually applied, and says so plainly when the server
             // reported a tier this build does not know.
             let done = gtk::Label::builder()
-                .label(copy::withdraw_result_sentence(reach.as_deref()))
+                .label(format!(
+                    "{}{}",
+                    copy::withdraw_result_sentence(reach.as_deref()),
+                    note.as_ref().map(|n| format!("\n{n}")).unwrap_or_default()
+                ))
                 .xalign(0.0)
                 .wrap(true)
                 .build();
@@ -828,6 +832,10 @@ fn withdraw(app: &Rc<App>, submission_id: &str) {
                 Ok(value) => Withdrawal::Done(
                     value
                         .get("distribution_reach")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    value
+                        .get("token_deletion_note")
                         .and_then(|v| v.as_str())
                         .map(str::to_string),
                 ),

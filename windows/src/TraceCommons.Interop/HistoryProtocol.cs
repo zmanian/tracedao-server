@@ -255,6 +255,8 @@ public sealed class QueueOutcomeCounts
 /// </summary>
 public sealed class WithdrawResult
 {
+    [JsonPropertyName("token_deletion_note")]
+    public string? TokenDeletionNote { get; set; }
     [JsonPropertyName("withdrawn")]
     public bool Withdrawn { get; set; }
 

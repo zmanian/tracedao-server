@@ -50,6 +50,17 @@ public sealed record WitnessCopy
 
     [JsonPropertyName("applies_at_once")] public string AppliesAtOnce { get; init; } = "";
 
+    [JsonPropertyName("token_heading")] public string TokenHeading { get; init; } = "";
+    [JsonPropertyName("token_disclosure")] public string TokenDisclosure { get; init; } = "";
+    [JsonPropertyName("token_capture_note")] public string TokenCaptureNote { get; init; } = "";
+    [JsonPropertyName("token_scope_note")] public string TokenScopeNote { get; init; } = "";
+    [JsonPropertyName("token_enable")] public string TokenEnable { get; init; } = "";
+    [JsonPropertyName("token_disable")] public string TokenDisable { get; init; } = "";
+    [JsonPropertyName("token_confirm")] public string TokenConfirm { get; init; } = "";
+    [JsonPropertyName("token_cancel")] public string TokenCancel { get; init; } = "";
+    [JsonPropertyName("token_enabled")] public string TokenEnabled { get; init; } = "";
+    [JsonPropertyName("token_disabled")] public string TokenDisabled { get; init; } = "";
+    [JsonPropertyName("token_save_failed")] public string TokenSaveFailed { get; init; } = "";
     [JsonPropertyName("inference_heading")] public string InferenceHeading { get; init; } = "";
     [JsonPropertyName("inference_disclosure")] public string InferenceDisclosure { get; init; } = "";
     [JsonPropertyName("inference_capture_note")] public string InferenceCaptureNote { get; init; } = "";

@@ -19,6 +19,7 @@ namespace TraceCommons.Interop;
 public sealed class PreviewSummary
 {
     [JsonPropertyName("envelope_digest")] public string? EnvelopeDigest { get; set; }
+    [JsonPropertyName("token_distribution_summary")] public string? ProbabilitySummary { get; init; }
     [JsonPropertyName("would_send_bytes")]
     public long WouldSendBytes { get; set; }
 

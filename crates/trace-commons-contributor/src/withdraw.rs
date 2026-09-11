@@ -54,13 +54,40 @@ pub enum DistributionReach {
 
 #[derive(Debug, Deserialize)]
 struct WithdrawResponseBody {
+    #[serde(default)]
+    token_deletion_state: Option<TokenDeletionState>,
     distribution_reach: DistributionReach,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenDeletionState {
+    Pending,
+    Held,
+    Completed,
+    #[serde(other)]
+    Unknown,
+}
+impl TokenDeletionState {
+    pub fn note(self) -> &'static str {
+        match self {
+            Self::Pending => "Token data is blocked from use. Stored copies are awaiting deletion.",
+            Self::Held => {
+                "Token data is blocked from use. A retention hold prevents deletion of stored copies."
+            }
+            Self::Completed => {
+                "Token data is blocked from use. Server-managed token copies have been deleted; backup retention and previously downloaded copies are separate."
+            }
+            Self::Unknown => "Token data deletion status is unavailable.",
+        }
+    }
 }
 
 /// The outcome the caller needs: which tier applied, so the UI can tell the
 /// contributor the truth instead of a generic "done".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WithdrawOutcome {
+    pub token_deletion_state: Option<TokenDeletionState>,
     pub distribution_reach: DistributionReach,
 }
 
@@ -108,6 +135,7 @@ pub async fn call_withdraw(
         .await
     {
         Ok(body) => Ok(WithdrawOutcome {
+            token_deletion_state: body.token_deletion_state,
             distribution_reach: body.distribution_reach,
         }),
         Err(e) => Err(classify(&e)),

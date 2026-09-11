@@ -1209,6 +1209,14 @@ impl Sheet {
         // same sentence in a strictly better place: the footer is on screen
         // on every tab, so it cannot be the one thing a person happened not
         // to be looking at when they decided. See `copy::RESIDUAL_RISK`.
+        if let Some(summary) = &summary.token_distribution_summary {
+            let label = gtk::Label::builder()
+                .label(summary)
+                .wrap(true)
+                .xalign(0.0)
+                .build();
+            detail.append(&label);
+        }
         self.whats_in_it.append(&detail);
 
         if !summary.enrolled {

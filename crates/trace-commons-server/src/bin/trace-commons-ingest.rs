@@ -3,6 +3,8 @@
 
 #[path = "trace_commons_ingest_internal/admission.rs"]
 mod admission;
+#[path = "trace_commons_ingest_internal/token_bundles.rs"]
+mod token_bundles;
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -7569,6 +7571,27 @@ fn community_cors_origins() -> Vec<HeaderValue> {
 
 fn app(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/v1/token-bundles/query", post(token_bundles::query))
+        .route(
+            "/v1/research/token-bundles/query",
+            post(token_bundles::research_query),
+        )
+        .route(
+            "/v1/research/token-bundles/{submission}/{revision}/{artifact}",
+            get(token_bundles::research_read),
+        )
+        .route(
+            "/v1/token-bundles",
+            post(token_bundles::begin).get(token_bundles::capabilities),
+        )
+        .route(
+            "/v1/token-bundles/{submission}/{revision}",
+            get(token_bundles::status).post(token_bundles::finalize),
+        )
+        .route(
+            "/v1/token-bundles/{submission}/{revision}/{artifact}",
+            axum::routing::put(token_bundles::put).get(token_bundles::read),
+        )
         .route("/health", get(health_handler))
         .route("/v1/source", get(source_offer_handler))
         // Unauthenticated, like /v1/source above and for the same structural
@@ -16201,6 +16224,8 @@ const TRACE_WITHDRAWAL_REASON: &str = "contributor_withdrawal";
 /// request body; every field comes from auth-derived tenant state.
 #[derive(Debug, Serialize)]
 struct AccountTraceWithdrawalResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_deletion_state: Option<&'static str>,
     submission_id: Uuid,
     withdrawn_at: DateTime<Utc>,
     /// Label of the corpus status held immediately before withdrawal.
@@ -16222,6 +16247,7 @@ impl AccountTraceWithdrawalResponse {
         let already_distributed =
             record.distribution_reach == TRACE_WITHDRAWAL_REACH_COMMONS_DISTRIBUTED;
         Self {
+            token_deletion_state: None,
             submission_id: record.submission_id,
             withdrawn_at: record.withdrawn_at,
             prior_status: record.prior_status,
@@ -16284,6 +16310,7 @@ async fn delete_withdrawn_trace_objects(
     tenant_id: &str,
     submission_id: Uuid,
 ) -> anyhow::Result<()> {
+    token_bundles::cleanup(state, tenant_id, Some(submission_id)).await?;
     if let Some(record) = read_submission_record(&state.root, tenant_id, submission_id)? {
         delete_trace_objects_for_record(state, &record)?;
     }
@@ -16507,7 +16534,24 @@ async fn account_trace_withdraw_handler(
         );
     }
 
-    Ok(Json(AccountTraceWithdrawalResponse::from_record(tombstone)))
+    let mut response = AccountTraceWithdrawalResponse::from_record(tombstone);
+    if db.supports_token_bundles() {
+        let pending = db
+            .pending_token_bundle_deletions(&ctx.tenant_id, Some(submission_id))
+            .await
+            .map_err(internal_error)?;
+        response.token_deletion_state = Some(if pending.is_empty() {
+            "completed"
+        } else if state
+            .legal_hold_retention_policy_ids
+            .contains(&record.retention_policy_id)
+        {
+            "held"
+        } else {
+            "pending"
+        });
+    }
+    Ok(Json(response))
 }
 
 /// Mint a single-use login link for the authenticated device's principal.
@@ -50431,6 +50475,11 @@ async fn retention_maintenance_handler(
     )
     .await
     .map_err(maintenance_error)?;
+    if !body.dry_run {
+        token_bundles::cleanup(state.as_ref(), &tenant.tenant_id, None)
+            .await
+            .map_err(internal_error)?;
+    }
     if state.near_provisioning_enabled || state.admission.is_some() {
         let db = state.db_mirror.as_ref().ok_or_else(|| {
             api_error(

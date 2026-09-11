@@ -164,6 +164,8 @@ pub enum TraceArtifactInvalidationReason {
 #[serde(rename_all = "snake_case")]
 pub enum TraceArtifactKind {
     ContributionEnvelope,
+    TokenDistribution,
+    ContributionBundleManifest,
     ReplayExportManifest,
     ReplayDatasetExport,
     BenchmarkConversion,
@@ -187,6 +189,8 @@ impl TraceArtifactKind {
     pub fn as_path_segment(&self) -> &'static str {
         match self {
             Self::ContributionEnvelope => "contribution_envelope",
+            Self::TokenDistribution => "token_distribution",
+            Self::ContributionBundleManifest => "contribution_bundle_manifest",
             Self::ReplayExportManifest => "replay_export_manifest",
             Self::ReplayDatasetExport => "replay_dataset_export",
             Self::BenchmarkConversion => "benchmark_conversion",
@@ -215,7 +219,59 @@ pub struct EncryptedTraceArtifact {
     pub wrapped_dek: Option<crate::trace_artifact_kek::WrappedDek>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PreparedBundleArtifact {
+    pub object_ref: TraceArtifactObjectRef,
+    pub artifact: EncryptedTraceArtifact,
+}
+
 pub trait TraceArtifactStore: Send + Sync {
+    /// Binary bundle support is explicit; legacy stores cannot claim it.
+    fn supports_bundle_bytes(&self) -> bool {
+        false
+    }
+
+    fn prepare_bundle_bytes(
+        &self,
+        _scope: &TraceArtifactScope,
+        _kind: TraceArtifactKind,
+        _object_id: &str,
+        _bytes: &[u8],
+    ) -> anyhow::Result<PreparedBundleArtifact> {
+        anyhow::bail!("bundle-byte-storage-unavailable")
+    }
+    fn publish_bundle_bytes(
+        &self,
+        _scope: &TraceArtifactScope,
+        _prepared: &PreparedBundleArtifact,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("bundle-byte-storage-unavailable")
+    }
+
+    fn put_bundle_bytes(
+        &self,
+        _scope: &TraceArtifactScope,
+        _kind: TraceArtifactKind,
+        _object_id: &str,
+        _bytes: &[u8],
+    ) -> anyhow::Result<TraceArtifactPutReceipt> {
+        anyhow::bail!("bundle-byte-storage-unavailable")
+    }
+    fn read_bundle_bytes(
+        &self,
+        _scope: &TraceArtifactScope,
+        _object: &TraceArtifactObjectRef,
+    ) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("bundle-byte-storage-unavailable")
+    }
+    fn delete_bundle_bytes(
+        &self,
+        _scope: &TraceArtifactScope,
+        _object: &TraceArtifactObjectRef,
+    ) -> anyhow::Result<bool> {
+        anyhow::bail!("bundle-byte-storage-unavailable")
+    }
+
     fn put_serialized_json(
         &self,
         tenant_storage_ref: &str,
@@ -564,11 +620,37 @@ impl<P: RemoteTraceArtifactProvider, K: KmsKeyWrapper> ServiceOwnedTraceArtifact
         object_id: &str,
         serialized_json: &[u8],
     ) -> anyhow::Result<TraceArtifactPutReceipt> {
+        serde_json::from_slice::<serde_json::Value>(serialized_json)
+            .context("failed to parse serialized trace artifact")?;
+        self.put_scoped_bytes(scope, artifact_kind, object_id, serialized_json)
+    }
+
+    pub fn put_scoped_bytes(
+        &self,
+        scope: &TraceArtifactScope,
+        artifact_kind: TraceArtifactKind,
+        object_id: &str,
+        serialized_json: &[u8],
+    ) -> anyhow::Result<TraceArtifactPutReceipt> {
+        let prepared =
+            self.prepare_scoped_bytes(scope, artifact_kind, object_id, serialized_json)?;
+        self.provider
+            .put_encrypted_artifact(prepared.object_ref.clone(), prepared.artifact.clone())?;
+        Ok(TraceArtifactPutReceipt {
+            object_ref: prepared.object_ref,
+            encrypted_at: prepared.artifact.receipt.encrypted_at,
+        })
+    }
+    fn prepare_scoped_bytes(
+        &self,
+        scope: &TraceArtifactScope,
+        artifact_kind: TraceArtifactKind,
+        object_id: &str,
+        serialized_json: &[u8],
+    ) -> anyhow::Result<PreparedBundleArtifact> {
         self.validate_remote_config()?;
         scope.validate()?;
         validate_non_empty_ref("trace artifact object id", object_id)?;
-        serde_json::from_slice::<serde_json::Value>(serialized_json)
-            .context("failed to parse serialized trace artifact")?;
         // v2 envelope: wrap a freshly generated DEK with the configured KEK
         // and AES-256-GCM-encrypt the plaintext directly under that DEK.
         let dek = generate_dek();
@@ -612,11 +694,9 @@ impl<P: RemoteTraceArtifactProvider, K: KmsKeyWrapper> ServiceOwnedTraceArtifact
             ciphertext_sha256,
         };
         validate_remote_object_ref(scope, &self.config, &object_ref)?;
-        self.provider
-            .put_encrypted_artifact(object_ref.clone(), artifact)?;
-        Ok(TraceArtifactPutReceipt {
+        Ok(PreparedBundleArtifact {
             object_ref,
-            encrypted_at,
+            artifact,
         })
     }
 
@@ -714,6 +794,97 @@ impl<P: RemoteTraceArtifactProvider, K: KmsKeyWrapper> ServiceOwnedTraceArtifact
 impl<P: RemoteTraceArtifactProvider, K: KmsKeyWrapper> TraceArtifactStore
     for ServiceOwnedTraceArtifactStore<P, K>
 {
+    fn prepare_bundle_bytes(
+        &self,
+        scope: &TraceArtifactScope,
+        kind: TraceArtifactKind,
+        object_id: &str,
+        bytes: &[u8],
+    ) -> anyhow::Result<PreparedBundleArtifact> {
+        anyhow::ensure!(
+            matches!(
+                kind,
+                TraceArtifactKind::TokenDistribution
+                    | TraceArtifactKind::ContributionBundleManifest
+                    | TraceArtifactKind::ContributionEnvelope
+            ),
+            "invalid-bundle-artifact-kind"
+        );
+        anyhow::ensure!(bytes.len() <= 8 * 1024 * 1024, "bundle-artifact-limit");
+        self.prepare_scoped_bytes(scope, kind, object_id, bytes)
+    }
+    fn publish_bundle_bytes(
+        &self,
+        scope: &TraceArtifactScope,
+        prepared: &PreparedBundleArtifact,
+    ) -> anyhow::Result<()> {
+        validate_remote_object_ref(scope, &self.config, &prepared.object_ref)?;
+        verify_encrypted_artifact(
+            &prepared.artifact,
+            &scope.tenant_storage_ref,
+            &prepared.object_ref.artifact_kind,
+            &prepared.object_ref.object_key,
+            &prepared.object_ref.ciphertext_sha256,
+        )?;
+        self.provider
+            .put_encrypted_artifact(prepared.object_ref.clone(), prepared.artifact.clone())
+    }
+    fn supports_bundle_bytes(&self) -> bool {
+        true
+    }
+    fn put_bundle_bytes(
+        &self,
+        scope: &TraceArtifactScope,
+        kind: TraceArtifactKind,
+        object_id: &str,
+        bytes: &[u8],
+    ) -> anyhow::Result<TraceArtifactPutReceipt> {
+        anyhow::ensure!(
+            matches!(
+                kind,
+                TraceArtifactKind::TokenDistribution
+                    | TraceArtifactKind::ContributionBundleManifest
+                    | TraceArtifactKind::ContributionEnvelope
+            ),
+            "invalid-bundle-artifact-kind"
+        );
+        anyhow::ensure!(bytes.len() <= 8 * 1024 * 1024, "bundle-artifact-limit");
+        self.put_scoped_bytes(scope, kind, object_id, bytes)
+    }
+    fn read_bundle_bytes(
+        &self,
+        scope: &TraceArtifactScope,
+        object: &TraceArtifactObjectRef,
+    ) -> anyhow::Result<Vec<u8>> {
+        let artifact = self.read_scoped_artifact(scope, object)?;
+        anyhow::ensure!(
+            artifact.schema_version == TRACE_ARTIFACT_CIPHERTEXT_SCHEMA_V2,
+            "bundle-v2-encryption-required"
+        );
+        let wrapped = artifact
+            .wrapped_dek
+            .as_ref()
+            .context("bundle-key-unavailable")?;
+        let ctx = KekContext {
+            tenant_storage_ref: scope.tenant_storage_ref.clone(),
+            artifact_kind: object.artifact_kind.clone(),
+        };
+        let dek = self.kek.unwrap_dek(wrapped, &ctx)?;
+        let ciphertext = base64::engine::general_purpose::STANDARD
+            .decode(artifact.ciphertext_base64.as_bytes())?;
+        let plaintext = aead_decrypt_with_dek(&dek, &ciphertext)?;
+        anyhow::ensure!(plaintext.len() <= 8 * 1024 * 1024, "bundle-artifact-limit");
+        Ok(plaintext)
+    }
+    fn delete_bundle_bytes(
+        &self,
+        scope: &TraceArtifactScope,
+        object: &TraceArtifactObjectRef,
+    ) -> anyhow::Result<bool> {
+        self.delete_scoped_artifact(scope, object)
+            .map(|receipt| receipt.deleted)
+    }
+
     fn put_serialized_json(
         &self,
         tenant_storage_ref: &str,
@@ -1728,6 +1899,59 @@ mod tests {
             kek,
             InMemoryRemoteTraceArtifactProvider::default(),
         )
+    }
+
+    #[test]
+    fn bundle_bytes_replay_preserves_ciphertext_and_tenant_scope() {
+        let store = test_remote_store();
+        let scope = TraceArtifactScope {
+            tenant_storage_ref: "tenant-a".into(),
+            submission_storage_ref: "submission-a".into(),
+        };
+        let bytes = [0, 255, 128, 13, 10];
+        let prepared = store
+            .prepare_bundle_bytes(
+                &scope,
+                TraceArtifactKind::TokenDistribution,
+                "tokens",
+                &bytes,
+            )
+            .unwrap();
+        let encoded = serde_json::to_vec(&prepared).unwrap();
+        let recovered: PreparedBundleArtifact = serde_json::from_slice(&encoded).unwrap();
+        store.publish_bundle_bytes(&scope, &prepared).unwrap();
+        store.publish_bundle_bytes(&scope, &recovered).unwrap();
+        assert_eq!(
+            store
+                .read_bundle_bytes(&scope, &prepared.object_ref)
+                .unwrap(),
+            bytes
+        );
+        let other = TraceArtifactScope {
+            tenant_storage_ref: "tenant-b".into(),
+            submission_storage_ref: "submission-a".into(),
+        };
+        assert!(
+            store
+                .read_bundle_bytes(&other, &prepared.object_ref)
+                .is_err()
+        );
+        assert!(
+            store
+                .delete_bundle_bytes(&other, &prepared.object_ref)
+                .is_err()
+        );
+        store
+            .delete_bundle_bytes(&scope, &prepared.object_ref)
+            .unwrap();
+        assert!(
+            store
+                .read_bundle_bytes(&scope, &prepared.object_ref)
+                .is_err()
+        );
+        store
+            .delete_bundle_bytes(&scope, &prepared.object_ref)
+            .unwrap();
     }
 
     fn assert_trace_artifact_store_contract(store: &dyn TraceArtifactStore) {

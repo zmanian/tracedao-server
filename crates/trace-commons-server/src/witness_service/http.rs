@@ -90,6 +90,7 @@ pub const WITNESS_SIGNATURE_HEADER: &str = "x-trace-witness-signature";
 pub fn witness_router(service: Arc<WitnessService>, load: WitnessLoadBound) -> Router {
     Router::new()
         .route("/v1/witness", post(witness_handler))
+        .route("/v1/witness/token-bundle", post(token_bundle_handler))
         .route("/v1/witness/admission", post(admission_witness_handler))
         // Axum's default 2 MiB body cap would refuse an oversized transcript
         // before the handler could name the refusal, and would accept nothing
@@ -576,6 +577,53 @@ async fn witness_handler(
             Ok(contribution_response(response))
         }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenBundleBody {
+    contribution: WitnessRequestBody,
+    capture_store_id: String,
+    capture_id: String,
+    bundle_revision: String,
+    restricted_token_consent: bool,
+}
+async fn token_bundle_handler(
+    State(service): State<Arc<WitnessService>>,
+    request: Request,
+) -> Result<Response, Refusal> {
+    let body = axum::body::to_bytes(request.into_body(), service.max_request_bytes())
+        .await
+        .map_err(|_| Refusal::new(StatusCode::PAYLOAD_TOO_LARGE, "witness_request_too_large"))?;
+    let body: TokenBundleBody = serde_json::from_slice(&body)
+        .map_err(|_| Refusal::new(StatusCode::BAD_REQUEST, "witness_request_malformed"))?;
+    let RequestShape::Contribution(request) = shape_of(body.contribution)? else {
+        return Err(Refusal::new(
+            StatusCode::BAD_REQUEST,
+            "witness_request_malformed",
+        ));
+    };
+    let response = service
+        .witness_token_bundle(
+            *request,
+            super::token_bundle::TokenBundleOptions {
+                capture_store_id: body.capture_store_id,
+                capture_id: body.capture_id,
+                bundle_revision: body.bundle_revision,
+                restricted_token_consent: body.restricted_token_consent,
+            },
+        )
+        .await
+        .map_err(refusal_for)?;
+    let verdict = response.contribution.residual_risk_verdict();
+    Ok(axum::Json(serde_json::json!({
+        "envelope_bytes":response.contribution.envelope_bytes,
+        "envelope_certificate":certificate_json(&response.contribution.certificate,verdict),
+        "envelope_signature_hex":response.contribution.signature_hex,
+        "manifest_bytes":response.manifest_bytes,"attachment_bytes":response.attachment_bytes,
+        "admission":response.admission,
+        "certificate":certificate_json(&response.certificate,verdict),"signature_hex":response.signature_hex
+    })).into_response())
 }
 
 /// Separate route: legacy callers never accidentally request admission evidence.

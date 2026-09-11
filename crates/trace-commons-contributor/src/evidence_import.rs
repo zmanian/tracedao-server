@@ -446,6 +446,7 @@ mod tests {
                     rewritten = rewritten.replace(value, "[REDACTED:unknown]");
                 }
                 Ok(Some(SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: rewritten,
                     summary: SafePrivacyFilterSummary {
                         schema_version: 1,

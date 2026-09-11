@@ -48,3 +48,5 @@ pub mod trace_upload_claim_issuer_admin;
 pub mod witness_service;
 
 pub const TRACE_COMMONS_SERVER_EXTRACTION_STAGE: &str = "server-storage-owned";
+
+pub mod token_bundle_store;

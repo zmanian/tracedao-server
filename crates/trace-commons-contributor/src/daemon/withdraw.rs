@@ -111,6 +111,7 @@ pub(super) async fn handle_withdraw(shared: &DaemonShared, req: &Request) -> Res
                 serde_json::json!({
                     "withdrawn": true,
                     "distribution_reach": reach_label(outcome.distribution_reach),
+                    "token_deletion_note":outcome.token_deletion_state.map(|s| s.note()),
                 }),
             )
         }

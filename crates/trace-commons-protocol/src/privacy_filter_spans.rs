@@ -99,6 +99,25 @@ pub(crate) fn apply_spans(
     redacted_text.push_str(&text[cursor..]);
 
     Ok(Some(SafePrivacyFilterRedaction {
+        private_edits: Some(crate::private_edit_map::PrivateRedactionEdits(
+            collapsed
+                .iter()
+                .map(|span| crate::token_distribution::RedactionEdit {
+                    original: crate::token_distribution::ByteSpan {
+                        start: span.start as u64,
+                        end: span.end as u64,
+                    },
+                    replacement: format!(
+                        "[REDACTED:{}]",
+                        safe_privacy_filter_label(
+                            Some(&span.category),
+                            &mut RedactionReport::default()
+                        )
+                    )
+                    .into_bytes(),
+                })
+                .collect(),
+        )),
         redacted_text,
         summary: SafePrivacyFilterSummary {
             schema_version: 1,

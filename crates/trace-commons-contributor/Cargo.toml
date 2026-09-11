@@ -546,7 +546,10 @@ keyring-core = "=1.0.0"
 # enough, and the changed lines of both lock diffs were grepped for
 # non-ironwire movement, of which there were zero (22 changed lines each, all
 # of them the rev).
-ironwire_proxy = { git = "https://github.com/nearai/ironwire", rev = "74cd49c106b7dab9c35e82d92af6c14df27d594b" }
+# Token capture integration: nearai/ironwire#57 (draft), exact reviewed candidate.
+# Adds bounded private capture leases and opt-in Chat probability fields.
+# No new packages; re-run downstream platform and license gates before landing.
+ironwire_proxy = { git = "https://github.com/nearai/ironwire", rev = "d622d11417f1e70f3eada0877673e3866ba5f31f" }
 # The same IronWire revision, two more of its crates, promoted from
 # transitive to direct. `ironwire_agents` is the crate whose entire purpose is
 # "which coding tools does this machine have, are they pointed at us, and how
@@ -560,8 +563,8 @@ ironwire_proxy = { git = "https://github.com/nearai/ironwire", rev = "74cd49c106
 # crate does not reimplement, in a second place, the three config-editing
 # rules (never rewrite a file we cannot parse; fill an empty slot but report a
 # full one; remove only what we put there) that crate exists to hold.
-ironwire_agents = { git = "https://github.com/nearai/ironwire", rev = "74cd49c106b7dab9c35e82d92af6c14df27d594b" }
-ironwire_catalog = { git = "https://github.com/nearai/ironwire", rev = "74cd49c106b7dab9c35e82d92af6c14df27d594b" }
+ironwire_agents = { git = "https://github.com/nearai/ironwire", rev = "d622d11417f1e70f3eada0877673e3866ba5f31f" }
+ironwire_catalog = { git = "https://github.com/nearai/ironwire", rev = "d622d11417f1e70f3eada0877673e3866ba5f31f" }
 notify = "8.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 ring = "0.17"

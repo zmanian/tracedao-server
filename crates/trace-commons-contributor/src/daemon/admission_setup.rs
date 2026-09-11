@@ -460,7 +460,7 @@ fn validate_challenge(
     }
     Ok(())
 }
-fn exact_session_id(source: &str, path: &Path) -> Result<String> {
+pub(crate) fn exact_session_id(source: &str, path: &Path) -> Result<String> {
     if !matches!(source, "codex" | "claude-code") {
         bail!("admission_setup_source_unsupported");
     }

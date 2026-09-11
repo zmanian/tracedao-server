@@ -288,6 +288,9 @@ pub const METHODS: &[&str] = &[
     "near_ai_funding",
     "get_public_profile",
     "get_settings",
+    "token_storage_status",
+    "remove_token_local_copies",
+    "discard_token_reviews",
     "harness_commit",
     "harness_list",
     "harness_plan",
@@ -478,6 +481,7 @@ pub struct DaemonShared {
     private_inference: Arc<tokio::sync::Mutex<Option<super::private_inference::PrivateInference>>>,
     private_inference_terminating: AtomicBool,
     private_inference_generation: std::sync::atomic::AtomicU64,
+    token_review_generation: std::sync::atomic::AtomicU64,
     /// The credential-change count this daemon has already absorbed.
     ///
     /// See [`super::nearai_credential::ceremony::change_count`] for what the
@@ -649,6 +653,7 @@ impl DaemonShared {
             )),
             private_inference_terminating: AtomicBool::new(false),
             private_inference_generation: std::sync::atomic::AtomicU64::new(0),
+            token_review_generation: std::sync::atomic::AtomicU64::new(0),
             near_ai_credential_changes: std::sync::atomic::AtomicU64::new(0),
             private_inference_stop_confirmed: Arc::new(AtomicBool::new(false)),
             private_inference_changed: tokio::sync::Notify::new(),
@@ -768,7 +773,7 @@ impl DaemonShared {
         let mut held = self.private_inference.lock().await;
         // Read after acquiring lifecycle ownership: a queued reconciliation
         // must not replay a setting superseded while it waited for that lock.
-        let (on, generation, credential) = {
+        let (on, generation, credential, capture_enabled) = {
             let settings = self.settings.lock().expect("settings lock");
             (
                 !self.private_inference_terminating.load(Ordering::Acquire)
@@ -782,6 +787,7 @@ impl DaemonShared {
                     .near_ai_inference
                     .as_ref()
                     .map(|c| ironwire_proxy::embed::HostSecret::from(c.key.clone())),
+                settings.token_capture_enabled,
             )
         };
         let Some(host) = held.as_mut() else {
@@ -803,6 +809,7 @@ impl DaemonShared {
         };
         host.set_runtime(self.proxy_runtime.get().cloned());
         host.set_credential(credential);
+        host.set_token_capture(capture_enabled);
         if host.accept_generation(generation) {
             if on {
                 // A cycle, not a stop: `apply(false)` alone leaves the start
@@ -2042,6 +2049,9 @@ pub fn handle_request(shared: &DaemonShared, req: &Request) -> Response {
             // and says so rather than queueing an unbounded number of asks.
             Response::ok(req.id, serde_json::json!({ "requested": true }))
         }
+        "token_storage_status" => handle_token_storage(shared, req),
+        "remove_token_local_copies" => handle_token_storage(shared, req),
+        "discard_token_reviews" => handle_token_storage(shared, req),
         "get_settings" => {
             let mut value = {
                 let settings = shared.settings.lock().expect("settings lock");
@@ -2070,11 +2080,107 @@ pub fn handle_request(shared: &DaemonShared, req: &Request) -> Response {
     }
 }
 
+fn handle_token_storage(shared: &DaemonShared, req: &Request) -> Response {
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let journal =
+            crate::token_bundle::BundleJournal::open(&shared.store.dir().join("token-bundles"))?;
+        let discard = req.method == "discard_token_reviews";
+        if discard {
+            anyhow::ensure!(
+                req.params
+                    .get("confirmed")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true),
+                "token-discard-confirmation-required"
+            );
+            let mut queue = shared.queue.lock().expect("queue lock");
+            let mut ids = Vec::new();
+            for entry in queue.all() {
+                if super::approved_envelope::load_witnessed(&shared.store, entry.entry_id)?
+                    .is_some_and(|a| a.token_bundle.is_some())
+                {
+                    anyhow::ensure!(
+                        !matches!(
+                            entry.state,
+                            super::queue::QueueState::Approved
+                                | super::queue::QueueState::Uploading
+                        ),
+                        "token-review-undo-approval-first"
+                    );
+                    if entry.state == super::queue::QueueState::Pending {
+                        ids.push(entry.entry_id);
+                    }
+                }
+            }
+            shared
+                .token_review_generation
+                .fetch_add(1, Ordering::AcqRel);
+            for id in &ids {
+                queue.set_state(
+                    *id,
+                    super::queue::QueueState::Refused,
+                    Some("token-review-discarded".into()),
+                );
+            }
+            queue.save(&shared.store)?;
+            for id in ids {
+                super::approved_envelope::remove(&shared.store, id)?;
+            }
+        }
+        if req.method != "token_storage_status" {
+            journal.remove_local_copies(discard)?;
+        }
+        let mut value = journal.storage_status(chrono::Utc::now().timestamp().max(0) as u64)?;
+        let enabled = shared
+            .settings
+            .lock()
+            .expect("settings lock")
+            .token_capture_enabled;
+        decorate_token_storage(&mut value, enabled);
+        Ok(value)
+    })();
+    match result {
+        Ok(value) => Response::ok(req.id, value),
+        Err(_) => Response::err(req.id, ERR_BAD_PARAMS, "token-storage-action-unavailable"),
+    }
+}
+
+fn decorate_token_storage(value: &mut serde_json::Value, enabled: Option<bool>) {
+    if !value.is_object() {
+        return;
+    }
+    value["capture_enabled"] = serde_json::json!(enabled == Some(true));
+    value["capture_label"] = serde_json::json!(if enabled == Some(true) {
+        "Disable local token capture"
+    } else {
+        "Enable local token capture"
+    });
+    value["capture_confirmation"] = serde_json::json!(
+        "Token capture stores raw request and response data on this device. It requires configured, supported model targets and restarts the hosted proxy. Contribution and witness sharing remain separate choices."
+    );
+    value["capture_notice"] = serde_json::json!(match enabled {
+        Some(true) =>
+            "Local capture requested. The Private AI connection status reports whether the proxy started successfully.",
+        Some(false) =>
+            "Local capture disabled for the hosted proxy. Existing captures retain their expiry and cleanup rules.",
+        None =>
+            "Local capture follows the proxy configuration. External proxies are configured separately.",
+    });
+}
+
 fn add_admission_setting(shared: &DaemonShared, value: &mut serde_json::Value) {
     // What the hosted proxy is actually doing, beside the `private_inference`
     // boolean that says what was asked for. See
     // `DaemonShared::private_inference_value`.
     value["private_inference_state"] = shared.private_inference_value();
+    let root = shared.store.dir().join("token-bundles");
+    value["token_storage"] = crate::token_bundle::BundleJournal::open(&root)
+        .and_then(|j| j.storage_status(chrono::Utc::now().timestamp().max(0) as u64))
+        .unwrap_or(serde_json::Value::Null);
+    let enabled = value
+        .get("token_capture_enabled")
+        .and_then(serde_json::Value::as_bool);
+    decorate_token_storage(&mut value["token_storage"], enabled);
     value["admission_evidence_required"] = match shared.store.load_config() {
         Ok(cfg) => serde_json::json!(
             cfg.and_then(|c| c.witness)
@@ -2555,6 +2661,7 @@ fn handle_set_settings(shared: &DaemonShared, req: &Request) -> Response {
     // Advance lifecycle consent only after this candidate is persisted.
     // Routing separately retains its warm reader when its endpoint is unchanged.
     let private_inference_before = settings.private_inference;
+    let capture_before = settings.token_capture_enabled;
     // `apply_settings_object` is the same validation
     // `tc_daemon_start_with_settings` (the C ABI's pre-start
     // settings override) uses, so there is one definition of "a
@@ -2585,7 +2692,10 @@ fn handle_set_settings(shared: &DaemonShared, req: &Request) -> Response {
                 return Response::err(req.id, ERR_UNAVAILABLE, "settings-write-failed");
             }
             *settings = candidate;
-            if settings.private_inference != private_inference_before || credential_changed {
+            if settings.private_inference != private_inference_before
+                || settings.token_capture_enabled != capture_before
+                || credential_changed
+            {
                 shared
                     .private_inference_generation
                     .fetch_add(1, Ordering::Release);
@@ -3445,6 +3555,7 @@ async fn handle_witness_preview_request_inner(
         Ok(Some(cfg)) => cfg,
         _ => return Response::err(req.id, ERR_UNAVAILABLE, "witness-review-not-enrolled"),
     };
+    let token_generation = shared.token_review_generation.load(Ordering::Acquire);
     let initial_settings = shared.settings.lock().expect("settings lock").clone();
     let near_ai = initial_settings.near_ai.clone();
     let bodies = initial_settings.ironwire_attested_bodies;
@@ -3452,6 +3563,19 @@ async fn handle_witness_preview_request_inner(
     let sources = crate::source::all_sources(&roots);
     let Some((source, session_ref)) = super::find_session(&sources, &entry) else {
         return Response::err(req.id, ERR_BAD_PARAMS, "session-file-vanished");
+    };
+    let token_control = if initial_settings.token_distributions_contribution {
+        let Some(declaration) = initial_settings.ironwire.as_ref() else {
+            return Response::err(req.id, ERR_UNAVAILABLE, "token-capture-proxy-unavailable");
+        };
+        match super::token_capture::client(declaration) {
+            Ok(client) => Some(client),
+            Err(_) => {
+                return Response::err(req.id, ERR_UNAVAILABLE, "token-capture-proxy-unavailable");
+            }
+        }
+    } else {
+        None
     };
     let build = super::preview::build_witnessed_preview(
         &shared.store,
@@ -3461,6 +3585,7 @@ async fn handle_witness_preview_request_inner(
         &session_ref,
         super::preview::WitnessPreviewOptions {
             raw_session_confirmed: true,
+            token_capture: token_control.as_ref(),
             expected_session_hash: &entry.session_hash,
             include_inference_bodies: bodies,
             verdict,
@@ -3480,6 +3605,10 @@ async fn handle_witness_preview_request_inner(
             return Response::err(req.id, ERR_UNAVAILABLE, witness_review_refusal(&error));
         }
     };
+    let mut pin_guard = crate::token_bundle::ReviewPinGuard::new(
+        shared.store.dir(),
+        review.artifact.token_bundle.as_ref(),
+    );
     // The async network operation is over. Recheck identity, consent and source
     // before either persistent write, and keep the queue locked through both.
     let current_cfg = match shared.store.load_config() {
@@ -3502,7 +3631,9 @@ async fn handle_witness_preview_request_inner(
         return Response::err(req.id, ERR_UNAVAILABLE, "witness-review-stale");
     }
     let mut queue = shared.queue.lock().expect("queue lock");
-    if queue.get(id) != Some(&entry) {
+    if queue.get(id) != Some(&entry)
+        || shared.token_review_generation.load(Ordering::Acquire) != token_generation
+    {
         return Response::err(req.id, ERR_UNAVAILABLE, "witness-review-stale");
     }
     if super::approved_envelope::save_witnessed(&shared.store, id, &review.artifact).is_err() {
@@ -3518,6 +3649,7 @@ async fn handle_witness_preview_request_inner(
         *queue = previous_queue;
         return Response::err(req.id, ERR_UNAVAILABLE, "witness-review-save-failed");
     }
+    pin_guard.disarm();
     Response::ok(
         req.id,
         serde_json::json!({"status": "ready", "summary": review.summary}),
@@ -10341,7 +10473,7 @@ mod tests {
             src,
             "pub async fn handle_request_async(shared",
         ));
-        assert_eq!(sync.len(), 37, "synchronous dispatcher arms: {sync:?}");
+        assert_eq!(sync.len(), 40, "synchronous dispatcher arms: {sync:?}");
         assert_eq!(asy.len(), 25, "asynchronous dispatcher arms: {asy:?}");
 
         let dispatched: std::collections::BTreeSet<String> = sync.union(&asy).cloned().collect();

@@ -1427,6 +1427,123 @@ async fn insert_near_credit_outbox_item_on_tx(
 
 #[async_trait]
 impl TraceCorpusStore for PgBackend {
+    fn supports_token_bundles(&self) -> bool {
+        true
+    }
+    async fn publish_token_object(
+        &self,
+        tenant: &str,
+        submission: Uuid,
+        revision: &str,
+        owner: &str,
+        artifact: &str,
+        store: &dyn crate::trace_artifact_store::TraceArtifactStore,
+    ) -> Result<(), DatabaseError> {
+        super::token_bundles::publish_token_object(
+            self, tenant, submission, revision, owner, artifact, store,
+        )
+        .await
+    }
+    async fn get_token_bundle_for_export(
+        &self,
+        tenant: &str,
+        submission: Uuid,
+        revision: &str,
+    ) -> Result<Option<crate::token_bundle_store::StoredTokenBundle>, DatabaseError> {
+        super::token_bundles::get_token_bundle_for_export(self, tenant, submission, revision).await
+    }
+    async fn process_token_bundles(
+        &self,
+        tenant: &str,
+        store: &dyn crate::trace_artifact_store::TraceArtifactStore,
+    ) -> Result<usize, DatabaseError> {
+        super::token_bundles::process_token_bundles(self, tenant, store).await
+    }
+    async fn query_token_bundles(
+        &self,
+        tenant: &str,
+        owner: Option<&str>,
+        query: &crate::token_bundle_store::TokenBundleQuery,
+    ) -> Result<Vec<crate::token_bundle_store::TokenBundleIndexEntry>, DatabaseError> {
+        super::token_bundles::query_token_bundles(self, tenant, owner, query).await
+    }
+    async fn delete_token_objects(
+        &self,
+        tenant: &str,
+        submission: Uuid,
+        revision: &str,
+        held_policies: &[String],
+        store: &dyn crate::trace_artifact_store::TraceArtifactStore,
+    ) -> Result<(), DatabaseError> {
+        super::token_bundles::delete_token_objects(
+            self,
+            tenant,
+            submission,
+            revision,
+            held_policies,
+            store,
+        )
+        .await
+    }
+    async fn begin_token_bundle(
+        &self,
+        bundle: crate::token_bundle_store::StoredTokenBundle,
+    ) -> Result<crate::token_bundle_store::StoredTokenBundle, DatabaseError> {
+        super::token_bundles::begin_token_bundle(self, bundle).await
+    }
+    async fn get_token_bundle(
+        &self,
+        tenant: &str,
+        submission: Uuid,
+        revision: &str,
+        owner: &str,
+    ) -> Result<Option<crate::token_bundle_store::StoredTokenBundle>, DatabaseError> {
+        super::token_bundles::get_token_bundle(self, tenant, submission, revision, owner).await
+    }
+    async fn stage_token_object(
+        &self,
+        tenant: &str,
+        submission: Uuid,
+        revision: &str,
+        owner: &str,
+        object: crate::token_bundle_store::StoredTokenObject,
+    ) -> Result<(), DatabaseError> {
+        super::token_bundles::stage_token_object(self, tenant, submission, revision, owner, object)
+            .await
+    }
+    async fn commit_token_bundle(
+        &self,
+        tenant: &str,
+        submission: Uuid,
+        revision: &str,
+        owner: &str,
+        receipt: trace_commons_protocol::token_distribution::DurableBundleReceipt,
+    ) -> Result<trace_commons_protocol::token_distribution::DurableBundleReceipt, DatabaseError>
+    {
+        super::token_bundles::commit_token_bundle(
+            self, tenant, submission, revision, owner, receipt,
+        )
+        .await
+    }
+    async fn pending_token_bundle_deletions(
+        &self,
+        tenant: &str,
+        submission: Option<Uuid>,
+    ) -> Result<Vec<crate::token_bundle_store::StoredTokenBundle>, DatabaseError> {
+        super::token_bundles::pending_token_bundle_deletions(self, tenant, submission).await
+    }
+    async fn mark_token_object_deleted(
+        &self,
+        tenant: &str,
+        submission: Uuid,
+        revision: &str,
+        artifact: &str,
+    ) -> Result<(), DatabaseError> {
+        super::token_bundles::mark_token_object_deleted(
+            self, tenant, submission, revision, artifact,
+        )
+        .await
+    }
     async fn upsert_trace_submission(
         &self,
         submission: TraceSubmissionWrite,

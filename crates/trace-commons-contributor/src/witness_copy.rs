@@ -74,6 +74,31 @@ pub const WITNESS_APPLIES_AT_ONCE: &str = "Changes here apply to the next sessio
 
 /// Consent to carry inference content is independent of observing a proxy's
 /// ledger, configuring a witness, and acknowledging the extra privacy scan.
+/// Metadata only: never render token bytes or alternative text in status UI.
+pub fn token_review_summary(
+    kept: usize,
+    omitted: u64,
+    alternatives: usize,
+    omitted_alternatives: u64,
+) -> String {
+    format!(
+        "Token probabilities: {kept} positions and {alternatives} alternatives included; {omitted} positions and {omitted_alternatives} alternatives removed. Restricted research data. Probabilities are not recalculated after filtering."
+    )
+}
+
+pub const WITNESS_TOKEN_HEADING: &str = "Token probabilities";
+pub const WITNESS_TOKEN_DISCLOSURE: &str = "Include token probabilities and alternative tokens in sessions you review with your witness. Alternatives can contain personal information even when the chosen text does not. The witness filters them before contribution; they remain restricted research data.";
+pub const WITNESS_TOKEN_CAPTURE_NOTE: &str = "Capture is configured separately in Ironwire for supported models. This permission does not turn on capture.";
+pub const WITNESS_TOKEN_SCOPE_NOTE: &str = "After the server confirms durable storage, this app removes its local bundle and releases its capture lease. Your agent session files stay on this device. Withdrawing a contribution is a separate action.";
+pub const WITNESS_TOKEN_ENABLE: &str = "Include token probabilities";
+pub const WITNESS_TOKEN_DISABLE: &str = "Stop including token probabilities";
+pub const WITNESS_TOKEN_CONFIRM: &str = "Allow token review";
+pub const WITNESS_TOKEN_CANCEL: &str = "Not now";
+pub const WITNESS_TOKEN_ENABLED: &str = "Token probabilities will be included in explicit witness reviews when a matching capture is available.";
+pub const WITNESS_TOKEN_DISABLED: &str = "Token probabilities are not included.";
+pub const WITNESS_TOKEN_SAVE_FAILED: &str =
+    "The change could not be confirmed. Check the saved setting before trying again.";
+
 pub const WITNESS_INFERENCE_HEADING: &str = "Include captured inference evidence";
 pub const WITNESS_INFERENCE_DISCLOSURE: &str = concat!(
     "When a contribution uses a witness, this allows the final model call's exact request ",
@@ -470,6 +495,17 @@ pub struct WitnessCopy {
     pub clear: &'static str,
     pub clear_note: &'static str,
     pub applies_at_once: &'static str,
+    pub token_heading: &'static str,
+    pub token_disclosure: &'static str,
+    pub token_capture_note: &'static str,
+    pub token_scope_note: &'static str,
+    pub token_enable: &'static str,
+    pub token_disable: &'static str,
+    pub token_confirm: &'static str,
+    pub token_cancel: &'static str,
+    pub token_enabled: &'static str,
+    pub token_disabled: &'static str,
+    pub token_save_failed: &'static str,
     pub inference_heading: &'static str,
     pub inference_disclosure: &'static str,
     pub inference_capture_note: &'static str,
@@ -622,6 +658,17 @@ pub fn witness_copy() -> WitnessCopy {
         clear: WITNESS_CLEAR,
         clear_note: WITNESS_CLEAR_NOTE,
         applies_at_once: WITNESS_APPLIES_AT_ONCE,
+        token_heading: WITNESS_TOKEN_HEADING,
+        token_disclosure: WITNESS_TOKEN_DISCLOSURE,
+        token_capture_note: WITNESS_TOKEN_CAPTURE_NOTE,
+        token_scope_note: WITNESS_TOKEN_SCOPE_NOTE,
+        token_enable: WITNESS_TOKEN_ENABLE,
+        token_disable: WITNESS_TOKEN_DISABLE,
+        token_confirm: WITNESS_TOKEN_CONFIRM,
+        token_cancel: WITNESS_TOKEN_CANCEL,
+        token_enabled: WITNESS_TOKEN_ENABLED,
+        token_disabled: WITNESS_TOKEN_DISABLED,
+        token_save_failed: WITNESS_TOKEN_SAVE_FAILED,
         inference_heading: WITNESS_INFERENCE_HEADING,
         inference_disclosure: WITNESS_INFERENCE_DISCLOSURE,
         inference_capture_note: WITNESS_INFERENCE_CAPTURE_NOTE,
@@ -1102,7 +1149,7 @@ mod tests {
         let object = json.as_object().unwrap();
         assert_eq!(
             object.len(),
-            26,
+            37,
             "a field added to WitnessCopy must be counted here, or a shell can be handed \
              a word this test has never seen"
         );

@@ -4838,3 +4838,30 @@ mod daemon_liveness_tests {
         );
     }
 }
+
+/// Explicit local lifecycle operations, separate from server withdrawal.
+pub fn daemon_token_storage(
+    store: &ConfigStore,
+    cleanup: bool,
+    discard: bool,
+    confirmed: bool,
+    json: bool,
+) -> Result<()> {
+    anyhow::ensure!(!discard || confirmed, "discard requires --confirm");
+    let method = if discard {
+        "discard_token_reviews"
+    } else if cleanup {
+        "remove_token_local_copies"
+    } else {
+        "token_storage_status"
+    };
+    let response = daemon_call(store, method, serde_json::json!({"confirmed":confirmed}))?;
+    render(response, json, |value| {
+        if let Some(line) = value.get("state_line").and_then(serde_json::Value::as_str) {
+            println!("{line}");
+        }
+        if let Some(line) = value.get("scope_note").and_then(serde_json::Value::as_str) {
+            println!("{line}");
+        }
+    })
+}

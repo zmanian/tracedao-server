@@ -347,6 +347,8 @@ pub const REASON_INPUTS_CHANGED: &str = "approval-inputs-changed";
 /// What preview reports to the contributor before they consent to upload.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PreviewSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_distribution_summary: Option<String>,
     pub would_send_bytes: usize,
     pub raw_session_bytes: u64,
     pub event_count: usize,
@@ -455,6 +457,7 @@ impl PreviewCardSummary {
     /// unchanged.
     fn into_summary(self, envelope_digest: String) -> PreviewSummary {
         PreviewSummary {
+            token_distribution_summary: None,
             would_send_bytes: self.would_send_bytes,
             raw_session_bytes: self.raw_session_bytes,
             event_count: self.event_count,
@@ -750,6 +753,7 @@ fn summarize_envelope(
 #[derive(Default)]
 pub struct WitnessPreviewOptions<'a> {
     pub raw_session_confirmed: bool,
+    pub token_capture: Option<&'a crate::token_capture_client::TokenCaptureClient>,
     pub expected_session_hash: &'a str,
     pub include_inference_bodies: bool,
     pub verdict: Option<crate::envelope::ContributorVerdict>,
@@ -801,20 +805,38 @@ pub async fn build_witnessed_preview(
         crate::submit::SubmitContext::new(store, cfg, &submit_options, near_ai.clone())
     })
     .map_err(|_| anyhow::anyhow!("witness-review-unavailable"))?;
-    let (response, attested_inference) = context
-        .prepare_witnessed_review(
-            &transcript,
-            options.correction,
-            options.include_inference_bodies,
-        )
-        .await?;
+    let (response, attested_inference, token_bundle) = if let Some(control) = options.token_capture
+    {
+        if !options.include_inference_bodies
+            || options.verdict.is_some()
+            || options.correction.is_some()
+        {
+            anyhow::bail!("token-review-input-unsupported");
+        }
+        let session = super::admission_setup::exact_session_id(source.name(), &session_ref.path)?;
+        let (response, record, bundle) = context
+            .prepare_token_review(&transcript, control, &session)
+            .await?;
+        (response, record, Some(bundle))
+    } else {
+        let (response, record) = context
+            .prepare_witnessed_review(
+                &transcript,
+                options.correction,
+                options.include_inference_bodies,
+            )
+            .await?;
+        (response, record, None)
+    };
+    let mut pin_guard =
+        crate::token_bundle::ReviewPinGuard::new(store.dir(), token_bundle.as_ref());
     let fingerprint = input_fingerprint(cfg, near_ai.as_ref(), options.include_inference_bodies);
     let verdict = options.verdict.map(|verdict| match verdict {
         crate::envelope::ContributorVerdict::Worked => "worked",
         crate::envelope::ContributorVerdict::Partly => "partly",
         crate::envelope::ContributorVerdict::Failed => "failed",
     });
-    let artifact = super::approved_envelope::WitnessReviewArtifact::new(
+    let mut artifact = super::approved_envelope::WitnessReviewArtifact::new(
         response,
         transcript.session_hash.clone(),
         fingerprint.clone(),
@@ -822,6 +844,7 @@ pub async fn build_witnessed_preview(
         options.correction,
         Some(attested_inference),
     );
+    artifact.token_bundle = token_bundle;
     let envelope = artifact.validate(
         cfg,
         &transcript.session_hash,
@@ -831,19 +854,28 @@ pub async fn build_witnessed_preview(
     )?;
     let redactor = build_redactor_with(cfg, transcript.cwd.as_deref(), near_ai)
         .map_err(|_| anyhow::anyhow!("pii-filter-unavailable"))?;
-    let summary = summarize_envelope(
+    let mut summary = summarize_envelope(
         &envelope,
         session_ref.size_bytes,
         &transcript,
         fingerprint,
         true,
         &redactor,
-    )?;
-    Ok(WitnessPreview {
-        summary: summary.into_summary(artifact.digest()?),
+    )?
+    .into_summary(artifact.digest()?);
+    if let Some(bundle) = &artifact.token_bundle {
+        summary.token_distribution_summary = bundle.summary_line.clone();
+        summary.would_send_bytes = summary
+            .would_send_bytes
+            .saturating_add(bundle.attachment_bytes as usize);
+    }
+    let preview = WitnessPreview {
+        summary,
         body: body_of(&envelope)?,
         artifact,
-    })
+    };
+    pin_guard.disarm();
+    Ok(preview)
 }
 
 /// Describe the certified envelope without invoking the remote redaction pipeline.
@@ -858,7 +890,7 @@ pub fn summarize_witnessed_preview(
     let fingerprint = input_fingerprint(cfg, near_ai.as_ref(), include_inference_bodies);
     let envelope = artifact.validate_stored(cfg, &transcript.session_hash, &fingerprint)?;
     let redactor = build_redactor_with(cfg, transcript.cwd.as_deref(), near_ai)?;
-    let summary = summarize_envelope(
+    let mut summary = summarize_envelope(
         &envelope,
         raw_session_bytes,
         transcript,
@@ -867,6 +899,12 @@ pub fn summarize_witnessed_preview(
         &redactor,
     )?
     .into_summary(artifact.digest()?);
+    if let Some(bundle) = &artifact.token_bundle {
+        summary.token_distribution_summary = bundle.summary_line.clone();
+        summary.would_send_bytes = summary
+            .would_send_bytes
+            .saturating_add(bundle.attachment_bytes as usize);
+    }
     Ok((summary, body_of(&envelope)?, envelope))
 }
 

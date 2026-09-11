@@ -323,6 +323,11 @@ pub struct DaemonSettings {
     /// queued or submitted envelope.
     #[serde(default)]
     pub ironwire_attested_bodies: bool,
+    /// Separate consent to include filtered token probabilities in explicit reviews.
+    #[serde(default)]
+    pub token_distributions_contribution: bool,
+    #[serde(default)]
+    pub token_capture_enabled: Option<bool>,
 
     /// Run IronWire inside this daemon, so tools can send inference through
     /// it. Off by default and never turned on by discovery: finding
@@ -732,6 +737,8 @@ impl Default for DaemonSettings {
             opencode_source: None,
             ironwire: None,
             ironwire_attested_bodies: false,
+            token_distributions_contribution: false,
+            token_capture_enabled: None,
             private_inference: false,
             private_inference_offer_seen: false,
             legacy_claude_root: None,
@@ -1075,6 +1082,10 @@ pub fn apply_settings_object(
             // witness. A shell that sets `ironwire` and not this one gets
             // routing telemetry and no bodies, which is the answer most
             // contributors mean.
+            "token_distributions_contribution" => {
+                settings.token_distributions_contribution =
+                    value.as_bool().ok_or(ERR_SETTINGS_INVALID_VALUE)?;
+            }
             "ironwire_attested_bodies" => {
                 settings.ironwire_attested_bodies =
                     value.as_bool().ok_or(ERR_SETTINGS_INVALID_VALUE)?;
@@ -1085,6 +1096,10 @@ pub fn apply_settings_object(
             // clearing it stops only the instance this daemon started --
             // an IronWire someone else is running is never touched by
             // either value.
+            "token_capture_enabled" => {
+                settings.token_capture_enabled =
+                    Some(value.as_bool().ok_or(ERR_SETTINGS_INVALID_VALUE)?);
+            }
             "private_inference" => {
                 settings.private_inference = value.as_bool().ok_or(ERR_SETTINGS_INVALID_VALUE)?;
             }

@@ -61,6 +61,8 @@ pub mod stored_cloud_credentials;
 pub(crate) mod test_paths;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub(crate) mod token_capture;
+mod token_cleanup;
 pub mod uploader;
 pub mod watcher;
 #[cfg(windows)]
@@ -420,6 +422,9 @@ async fn supervise_passes(shared: &Arc<ipc::DaemonShared>, dry_run: bool) -> Res
     let mut ticker = tokio::time::interval(poll_interval);
     let mut proxy_cleanup_tick = tokio::time::interval(std::time::Duration::from_millis(100));
     proxy_cleanup_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut token_cleanup_tick = tokio::time::interval(std::time::Duration::from_secs(300));
+    token_cleanup_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut token_cleanup_tasks = tokio::task::JoinSet::new();
     let mut sigterm = signal_stream();
     let shutdown_signal = Arc::clone(&shared.shutdown_signal);
 
@@ -442,6 +447,15 @@ async fn supervise_passes(shared: &Arc<ipc::DaemonShared>, dry_run: bool) -> Res
             _ = proxy_cleanup_tick.tick(), if shared.private_inference_is_stopping() => {
                 shared.reconcile_private_inference().await;
             }
+            _ = token_cleanup_tick.tick(), if !dry_run && token_cleanup_tasks.is_empty() => {
+                let shared = Arc::clone(shared);
+                token_cleanup_tasks.spawn(async move {
+                    if token_cleanup::pass(&shared).await.is_err() {
+                        tracing::warn!(pass = "token-cleanup", "daemon pass failed");
+                    }
+                });
+            }
+            _ = token_cleanup_tasks.join_next(), if !token_cleanup_tasks.is_empty() => {}
             _ = ticker.tick() => {
                 let now = Utc::now();
                 // Ahead of `watcher::tick` so the sources it builds via

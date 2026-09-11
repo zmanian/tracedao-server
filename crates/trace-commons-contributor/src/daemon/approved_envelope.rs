@@ -126,6 +126,8 @@ pub struct WitnessReviewArtifact {
     verdict: Option<String>,
     correction_hash: Option<String>,
     response: WitnessedEnvelope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) token_bundle: Option<crate::token_bundle::TokenBundleReview>,
     /// Whether the witness was handed a receipt with the bodies it certified.
     /// See `witness::inference_record`. `None` on a review written before
     /// the record existed, and that reads as unknown -- `default` rather
@@ -166,6 +168,7 @@ impl WitnessReviewArtifact {
             verdict: verdict.map(str::to_string),
             correction_hash: correction.map(correction_hash),
             response,
+            token_bundle: None,
             attested_inference,
         }
     }
@@ -289,7 +292,12 @@ pub fn save_witnessed(
     if bytes.len() > MAX_STORED_ARTIFACT_BYTES {
         bail!("approved-envelope-too-large");
     }
-    store.write_daemon_file(&file_name(entry_id), &bytes)
+    crate::token_bundle::with_review_budget(
+        store.dir(),
+        &store.dir().join(file_name(entry_id)),
+        bytes.len() as u64,
+        || store.write_daemon_file(&file_name(entry_id), &bytes),
+    )
 }
 
 /// Absence/legacy local envelope is None; malformed versioned state is an error.
@@ -334,7 +342,12 @@ pub fn save(
     if body.len() > MAX_ENVELOPE_BYTES {
         bail!("approved-envelope-too-large");
     }
-    store.write_daemon_file(&file_name(entry_id), &body)
+    crate::token_bundle::with_review_budget(
+        store.dir(),
+        &store.dir().join(file_name(entry_id)),
+        body.len() as u64,
+        || store.write_daemon_file(&file_name(entry_id), &body),
+    )
 }
 
 /// Read back the envelope stored for `entry_id`, or `None` when there is
@@ -354,6 +367,12 @@ pub fn load(store: &ConfigStore, entry_id: Uuid) -> Result<Option<TraceContribut
 }
 
 pub fn remove(store: &ConfigStore, entry_id: Uuid) -> Result<()> {
+    if let Ok(Some(artifact)) = load_witnessed(store, entry_id) {
+        if let Some(bundle) = artifact.token_bundle {
+            crate::token_bundle::BundleJournal::open(&store.dir().join("token-bundles"))?
+                .abandon_review(bundle.journal_id)?;
+        }
+    }
     store.remove_daemon_file(&file_name(entry_id))
 }
 
@@ -469,7 +488,7 @@ pub fn sweep(store: &ConfigStore, keep: &HashSet<Uuid>) -> Result<()> {
             continue;
         };
         if !keep.contains(&id) {
-            let _ = store.remove_daemon_file(&name);
+            let _ = remove(store, id);
         }
     }
     Ok(())

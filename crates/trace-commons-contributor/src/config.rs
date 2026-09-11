@@ -763,6 +763,18 @@ impl ConfigStore {
     }
 
     fn wipe_files(&self) -> Result<()> {
+        // Token review payloads belong to this enrollment. Never traverse a
+        // substituted link into an agent's session directory. Remaining raw
+        // capture leases expire independently in Ironwire's bounded spool.
+        let bundles = self.dir.join("token-bundles");
+        match std::fs::symlink_metadata(&bundles) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+                std::fs::remove_dir_all(&bundles).context("removing token review journal")?
+            }
+            Ok(_) => std::fs::remove_file(&bundles).context("removing token review link")?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("reading token review journal"),
+        }
         for name in [
             CONFIG_FILE,
             DEVICE_KEY_FILE,
@@ -1222,6 +1234,20 @@ mod tests {
         // Logout must also clear the first-use notice marker so a
         // re-enrolled user sees the notice again.
         assert!(store.ensure_near_ai_notice_shown().unwrap());
+    }
+
+    #[test]
+    fn wipe_removes_token_reviews_and_preserves_agent_sources() {
+        let (_d, store) = store();
+        std::fs::create_dir_all(store.dir.join("token-bundles")).unwrap();
+        std::fs::write(store.dir.join("token-bundles/review.json"), b"private").unwrap();
+        std::fs::write(store.dir.join("agent-session.jsonl"), b"original").unwrap();
+        store.wipe().unwrap();
+        assert!(!store.dir.join("token-bundles").exists());
+        assert_eq!(
+            std::fs::read(store.dir.join("agent-session.jsonl")).unwrap(),
+            b"original"
+        );
     }
 
     #[test]

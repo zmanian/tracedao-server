@@ -372,6 +372,7 @@ struct RoutingStatus: Decodable, Equatable {
 
 /// The socket `preview` result: summary only, never the trace body.
 struct PreviewSummary: Decodable, Equatable, Sendable {
+    var tokenDistributionSummary: String? = nil
     let wouldSendBytes: Int
     let rawSessionBytes: Int
     let eventCount: Int
@@ -400,6 +401,7 @@ struct PreviewSummary: Decodable, Equatable, Sendable {
     var enrolled: Bool = false
 
     enum CodingKeys: String, CodingKey {
+        case tokenDistributionSummary = "token_distribution_summary"
         case wouldSendBytes = "would_send_bytes"
         case rawSessionBytes = "raw_session_bytes"
         case eventCount = "event_count"
@@ -542,6 +544,7 @@ enum WithdrawalReach: String, Decodable {
 
 /// The `withdraw` result: `withdrawn: true` plus the tier that applied.
 struct WithdrawalOutcome: Decodable, Equatable {
+    let tokenDeletionNote: String?
     let withdrawn: Bool
     /// `nil` when the daemon sent a label this build does not know. The
     /// withdrawal still happened; what cannot be stated is how far the trace
@@ -552,10 +555,12 @@ struct WithdrawalOutcome: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case withdrawn
         case distributionReach = "distribution_reach"
+        case tokenDeletionNote = "token_deletion_note"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        tokenDeletionNote = try container.decodeIfPresent(String.self, forKey: .tokenDeletionNote)
         withdrawn = try container.decodeIfPresent(Bool.self, forKey: .withdrawn) ?? true
         let label = try container.decodeIfPresent(String.self, forKey: .distributionReach)
         distributionReach = label.flatMap(WithdrawalReach.init(rawValue:))
@@ -650,6 +655,8 @@ struct DaemonSettingsView: Decodable, Equatable {
     /// null when the daemon could not read its config, and absent from a
     /// daemon that predates the key -- neither of which is a yes.
     var admissionEvidenceOffered: Bool { admissionEvidenceRequired == true }
+    var tokenDistributionsContribution: Bool? = nil
+    var tokenStorage: TokenStorageView? = nil
     var ironwireAttestedBodies: Bool? = nil
     var inferenceEvidenceEnabled: Bool { ironwireAttestedBodies == true }
     /// Whether this daemon was asked to answer model calls itself. What was
@@ -694,6 +701,8 @@ struct DaemonSettingsView: Decodable, Equatable {
         case opencodeSourceMode = "opencode_source_mode"
         case ironwire
         case admissionEvidenceRequired = "admission_evidence_required"
+        case tokenDistributionsContribution = "token_distributions_contribution"
+        case tokenStorage = "token_storage"
         case ironwireAttestedBodies = "ironwire_attested_bodies"
         case privateInference = "private_inference"
         case privateInferenceOfferSeen = "private_inference_offer_seen"
@@ -897,6 +906,7 @@ extension PreviewSummary {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
+            tokenDistributionSummary: try c.decodeIfPresent(String.self, forKey: .tokenDistributionSummary),
             wouldSendBytes: try c.decode(Int.self, forKey: .wouldSendBytes),
             rawSessionBytes: try c.decode(Int.self, forKey: .rawSessionBytes),
             eventCount: try c.decode(Int.self, forKey: .eventCount),
@@ -935,5 +945,26 @@ extension HistoryRecord {
             explanations: try c.decode([String].self, forKey: .explanations),
             lastRefreshedAt: try c.decodeIfPresent(Date.self, forKey: .lastRefreshedAt)
         )
+    }
+}
+
+struct TokenStorageView: Decodable, Equatable {
+    let captureEnabled: Bool?
+    let captureLabel: String?
+    let captureConfirmation: String?
+    let captureNotice: String?
+    let stateLine: String
+    let scopeNote: String
+    let cleanupLabel: String
+    let discardLabel: String
+    let discardConfirmation: String
+    let cancelLabel: String
+    let confirmLabel: String
+    let failureLine: String
+    enum CodingKeys: String, CodingKey {
+        case captureEnabled = "capture_enabled", captureLabel = "capture_label", captureConfirmation = "capture_confirmation", captureNotice = "capture_notice"
+        case stateLine = "state_line", scopeNote = "scope_note", cleanupLabel = "cleanup_label"
+        case discardLabel = "discard_label", discardConfirmation = "discard_confirmation"
+        case cancelLabel = "cancel_label", confirmLabel = "confirm_label", failureLine = "failure_line"
     }
 }

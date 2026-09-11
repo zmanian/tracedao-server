@@ -501,7 +501,7 @@ public sealed class HistoryViewModel : INotifyPropertyChanged
         }
 
         _withdrawals[id] = WithdrawalAttempt.Done(
-            response.ResultAs<WithdrawResult>()?.DistributionReach);
+            response.ResultAs<WithdrawResult>()?.DistributionReach, response.ResultAs<WithdrawResult>()?.TokenDeletionNote);
 
         await RefreshAsync().ConfigureAwait(true);
     }

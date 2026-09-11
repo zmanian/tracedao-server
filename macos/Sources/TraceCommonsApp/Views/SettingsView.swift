@@ -62,6 +62,9 @@ struct SettingsContent: View {
     @State private var notificationStatus: UNAuthorizationStatus?
     @State private var notificationRequestPending = false
     @State private var showingGoPublic = false
+    @State private var showingTokenDisclosure = false
+    @State private var showingTokenDiscard = false
+    @State private var showingTokenCapture = false
     @State private var showingInferenceDisclosure = false
     /// The panel's two editable fields. Seeded from the daemon's answer --
     /// see `seedProfileDraft` -- rather than bound straight to it, so a
@@ -1272,6 +1275,7 @@ struct SettingsContent: View {
                 }
 
                 inferenceEvidence(copy: copy)
+                tokenContribution(copy: copy)
 
                 Text(copy.appliesAtOnce)
                     .font(TC.Font_.meta)
@@ -1314,6 +1318,66 @@ struct SettingsContent: View {
             Button(copy.inferenceCancel, role: .cancel) { }
         } message: {
             Text([copy.inferenceDisclosure, copy.inferenceCaptureNote, copy.inferenceScopeNote].joined(separator: "\n\n"))
+        }
+    }
+
+    private func tokenContribution(copy: WitnessCopy) -> some View {
+        VStack(alignment: .leading, spacing: TC.Space.sm) {
+            Text((copy.tokenHeading ?? "")).font(TC.Font_.body.weight(.semibold))
+            Text((copy.tokenDisclosure ?? "")).fixedSize(horizontal: false, vertical: true)
+            Text((copy.tokenCaptureNote ?? "")).fixedSize(horizontal: false, vertical: true)
+            Text((copy.tokenScopeNote ?? "")).fixedSize(horizontal: false, vertical: true)
+            if let enabled = model.daemonSettings?.tokenDistributionsContribution {
+                Text(enabled ? (copy.tokenEnabled ?? "") : (copy.tokenDisabled ?? ""))
+            }
+            HStack {
+                Button((copy.tokenEnable ?? "")) { showingTokenDisclosure = true }
+                    .disabled(model.tokenContributionBusy || model.daemonSettings?.tokenDistributionsContribution == nil)
+                Button((copy.tokenDisable ?? "")) {
+                    Task { await model.setTokenContribution(false) }
+                }
+                .disabled(model.tokenContributionBusy)
+            }
+            if let storage = model.daemonSettings?.tokenStorage {
+                if let label = storage.captureLabel {
+                    Text(storage.captureNotice ?? "")
+                    Button(label) {
+                        if storage.captureEnabled == true { Task { await model.setLocalTokenCapture(false) } }
+                        else { showingTokenCapture = true }
+                    }
+                    .disabled(model.tokenContributionBusy)
+                    .confirmationDialog(label, isPresented: $showingTokenCapture, titleVisibility: .visible) {
+                        Button(label) { Task { await model.setLocalTokenCapture(true) } }
+                        Button(storage.cancelLabel, role: .cancel) { }
+                    } message: { Text(storage.captureConfirmation ?? "") }
+                }
+                Text(storage.stateLine).fixedSize(horizontal: false, vertical: true)
+                Text(storage.scopeNote).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button(storage.cleanupLabel) { Task { await model.cleanTokenStorage(discard: false) } }
+                    Button(storage.discardLabel, role: .destructive) { showingTokenDiscard = true }
+                }
+                .disabled(model.tokenContributionBusy)
+                .confirmationDialog(storage.discardLabel, isPresented: $showingTokenDiscard, titleVisibility: .visible) {
+                    Button(storage.confirmLabel, role: .destructive) { Task { await model.cleanTokenStorage(discard: true) } }
+                    Button(storage.cancelLabel, role: .cancel) { }
+                } message: { Text(storage.discardConfirmation) }
+                if !model.tokenStorageNotice.isEmpty { Text(model.tokenStorageNotice) }
+            }
+            if model.tokenContributionSaveFailed {
+                NativeFlowNotice(message: (copy.tokenSaveFailed ?? ""), glyph: copy.wallet?.refusedGlyph ?? "", tone: copy.wallet?.refusedTone ?? "refused")
+            }
+        }
+        .opacity(copy.tokenHeading == nil ? 0 : 1)
+        .disabled(copy.tokenHeading == nil)
+        .font(TC.Font_.meta)
+        .confirmationDialog((copy.tokenHeading ?? ""), isPresented: $showingTokenDisclosure, titleVisibility: .visible) {
+            Button((copy.tokenConfirm ?? "")) {
+                Task { await model.setTokenContribution(true, disclosureConfirmed: true) }
+            }
+            Button((copy.tokenCancel ?? ""), role: .cancel) { }
+        } message: {
+            Text([(copy.tokenDisclosure ?? ""), (copy.tokenCaptureNote ?? ""), (copy.tokenScopeNote ?? "")].joined(separator: "\n\n"))
         }
     }
 

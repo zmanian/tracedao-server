@@ -273,6 +273,16 @@ enum AccountAction {
 
 #[derive(Subcommand)]
 enum DaemonAction {
+    /// Inspect or remove locally owned token review copies; never agent files
+    TokenStorage {
+        #[arg(long, conflicts_with = "discard")]
+        cleanup: bool,
+        /// Discard unsubmitted token reviews; undo approvals first
+        #[arg(long, requires = "confirm")]
+        discard: bool,
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Run the daemon in the foreground; a service manager backgrounds it
     Run {
         /// Watch and queue as normal, but upload nothing
@@ -484,6 +494,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             DaemonAction::Run { dry_run } => {
                 trace_commons_contributor::daemon::run(store, dry_run).await
             }
+            DaemonAction::TokenStorage {
+                cleanup,
+                discard,
+                confirm,
+            } => commands::daemon_token_storage(&store, cleanup, discard, confirm, cli.json),
             DaemonAction::Status => commands::daemon_status(&store, cli.json),
             DaemonAction::Pending => commands::daemon_pending(&store, cli.json),
             DaemonAction::Preview { entry_id } => {

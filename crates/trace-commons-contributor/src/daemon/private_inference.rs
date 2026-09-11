@@ -490,6 +490,7 @@ pub struct PrivateInference {
     /// A change takes effect at the next start: IronWire reads its
     /// credentials once, when the registry is built.
     credential: Option<HostSecret>,
+    token_capture_enabled: Option<bool>,
     state: PrivateInferenceState,
     /// A proxy this daemon started has ended on its own. Sticky until the
     /// switch is turned off and on again: restarting it every poll tick
@@ -534,6 +535,7 @@ impl PrivateInference {
             requested_generation: None,
             runtime: None,
             credential: None,
+            token_capture_enabled: None,
             state: PrivateInferenceState::Off,
             crashed: false,
             #[cfg(test)]
@@ -610,6 +612,10 @@ impl PrivateInference {
     /// private-inference generation when the stored credential changes, and
     /// [`Self::accept_generation`] turns that into the stop-and-start that
     /// actually rebuilds the registry.
+    pub fn set_token_capture(&mut self, enabled: Option<bool>) {
+        self.token_capture_enabled = enabled;
+    }
+
     pub fn set_credential(&mut self, credential: Option<HostSecret>) {
         self.credential = credential;
     }
@@ -861,8 +867,11 @@ impl PrivateInference {
             let home = self.home.clone();
             let port = self.port;
             let credential = self.credential.clone();
+            let capture_enabled = self.token_capture_enabled;
             self.starting = Some(runtime.spawn(async move {
-                embed::start_with_options(&home, port, embed_options(credential), |_, _| {}).await
+                let mut options = embed_options(credential);
+                options.token_capture_enabled = capture_enabled;
+                embed::start_with_options(&home, port, options, |_, _| {}).await
             }));
         }
         // Await through the retained handle. Canceling a caller leaves the
@@ -1742,11 +1751,25 @@ mod tests {
             PrivateInferenceState::Running { port } => port,
             other => panic!("expected Running, got {other:?}"),
         };
-        assert!(
-            reqwest::get(format!("http://127.0.0.1:{port}/_ironwire/health"))
-                .await
-                .is_ok_and(|r| r.status().is_success())
-        );
+        let http = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .unwrap();
+        let health = http
+            .get(format!("http://127.0.0.1:{port}/_ironwire/health"))
+            .send()
+            .await
+            .unwrap();
+        assert!(health.status().is_success());
+        health.bytes().await.unwrap();
+        drop(http);
+        // Close the fixture's client connection before stopping the listener.
+        // Otherwise Windows may keep the accepted socket's port in TIME_WAIT
+        // even after the owner correctly joins and drops its listener.
+        #[cfg(windows)]
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        #[cfg(not(windows))]
+        tokio::task::yield_now().await;
 
         host.apply(false).await;
         assert!(host.finish_stop().await);

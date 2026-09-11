@@ -486,6 +486,9 @@ pub struct SafePrivacyFilterSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SafePrivacyFilterRedaction {
+    /// Private byte edits from the classifier; absent for legacy text-only backends.
+    #[serde(skip)]
+    pub private_edits: Option<crate::private_edit_map::PrivateRedactionEdits>,
     pub redacted_text: String,
     pub summary: SafePrivacyFilterSummary,
     pub report: RedactionReport,
@@ -2283,6 +2286,7 @@ pub fn safe_privacy_filter_redaction_from_output(
         .unwrap_or(false);
 
     Ok(SafePrivacyFilterRedaction {
+        private_edits: None,
         redacted_text,
         summary: SafePrivacyFilterSummary {
             schema_version,
@@ -3884,6 +3888,16 @@ impl DeterministicTraceRedactor {
         report: &mut RedactionReport,
         privacy_filter_summary: &mut Option<SafePrivacyFilterSummary>,
     ) -> Result<String, TraceContributionError> {
+        self.apply_privacy_filter_to_text_mapped(text, report, privacy_filter_summary, &mut None)
+            .await
+    }
+    async fn apply_privacy_filter_to_text_mapped(
+        &self,
+        text: String,
+        report: &mut RedactionReport,
+        privacy_filter_summary: &mut Option<SafePrivacyFilterSummary>,
+        map: &mut Option<crate::private_edit_map::EditMap>,
+    ) -> Result<String, TraceContributionError> {
         let Some(adapter) = self.privacy_filter.as_ref() else {
             return Ok(text);
         };
@@ -3929,6 +3943,43 @@ impl DeterministicTraceRedactor {
             }
         };
 
+        if map.is_some() {
+            if let Some(edits) = &redaction.private_edits {
+                let mut rebuilt = Vec::new();
+                let mut cursor = 0usize;
+                let mut valid = true;
+                for edit in &edits.0 {
+                    let start = edit.original.start as usize;
+                    let end = edit.original.end as usize;
+                    if start < cursor
+                        || end < start
+                        || end > text.len()
+                        || rebuilt
+                            .len()
+                            .saturating_add(start.saturating_sub(cursor))
+                            .saturating_add(edit.replacement.len())
+                            > 1024 * 1024
+                    {
+                        valid = false;
+                        break;
+                    }
+                    rebuilt.extend_from_slice(&text.as_bytes()[cursor..start]);
+                    rebuilt.extend_from_slice(&edit.replacement);
+                    cursor = end;
+                }
+                if valid {
+                    rebuilt.extend_from_slice(&text.as_bytes()[cursor..]);
+                }
+                if !valid
+                    || rebuilt != redaction.redacted_text.as_bytes()
+                    || map.as_mut().is_some_and(|m| m.apply(&edits.0).is_none())
+                {
+                    *map = None;
+                }
+            } else if text != redaction.redacted_text {
+                *map = None;
+            }
+        }
         merge_privacy_filter_summary(privacy_filter_summary, &redaction.summary);
         report.merge(redaction.report);
         Ok(redaction.redacted_text)
@@ -3976,6 +4027,45 @@ impl DeterministicTraceRedactor {
     /// [`residual_risk`]/[`residual_risk_basis`] consume. It is returned
     /// rather than folded into a [`PrivacyMetadata`] precisely because
     /// `PrivacyMetadata` cannot reconstruct it.
+    /// Like the normal text pass, with private provenance from its actual edits.
+    pub async fn redact_text_with_edits(
+        &self,
+        input: &str,
+    ) -> Result<
+        (
+            FullyRedactedText,
+            Option<crate::private_edit_map::PrivateRedactionEdits>,
+        ),
+        TraceContributionError,
+    > {
+        let mut state = RedactionState {
+            edit_map: crate::private_edit_map::EditMap::new(input.len()),
+            ..Default::default()
+        };
+        let mut report = RedactionReport::default();
+        let mut privacy_filter_summary = None;
+        let redacted = self
+            .redact_text_with_state_through_prose_filter(
+                input,
+                &mut state,
+                &mut report,
+                &mut privacy_filter_summary,
+            )
+            .await?;
+        let edits = state
+            .edit_map
+            .take()
+            .and_then(|map| map.finish(redacted.as_bytes()));
+        Ok((
+            FullyRedactedText {
+                redacted,
+                report,
+                privacy_filter_summary,
+            },
+            edits,
+        ))
+    }
+
     pub async fn redact_text_through_prose_filter(
         &self,
         input: &str,
@@ -4014,8 +4104,18 @@ impl DeterministicTraceRedactor {
     ) -> Result<String, TraceContributionError> {
         let (redacted, child_report) = self.redact_text_with_state(input, state);
         report.merge(child_report);
-        self.apply_privacy_filter_to_text(redacted, report, privacy_filter_summary)
+        if state.edit_map.is_some() {
+            self.apply_privacy_filter_to_text_mapped(
+                redacted,
+                report,
+                privacy_filter_summary,
+                &mut state.edit_map,
+            )
             .await
+        } else {
+            self.apply_privacy_filter_to_text(redacted, report, privacy_filter_summary)
+                .await
+        }
     }
 
     // Metadata is also contributor input. Share the exact text pipeline and
@@ -4348,6 +4448,15 @@ impl DeterministicTraceRedactor {
         let mut redacted = self.redact_private_emails(input, state, &mut report);
         redacted = self.redact_generic_paths(&redacted, state, &mut report);
         redacted = self.redact_known_paths(&redacted, state, &mut report);
+        if state.edit_map.is_some() {
+            state.track_ranges(
+                &pem_block_regex()
+                    .find_iter(&redacted)
+                    .map(|m| m.start()..m.end())
+                    .collect::<Vec<_>>(),
+                "<REDACTED_PRIVATE_KEY>",
+            );
+        }
         redacted = apply_pem_block_redaction(&redacted, &mut report);
 
         let ranges = self.scan_secret_ranges(&redacted, &mut report);
@@ -4355,6 +4464,7 @@ impl DeterministicTraceRedactor {
             return (redacted, report);
         }
 
+        state.track_ranges(&ranges, "[REDACTED]");
         (apply_redaction_ranges(&redacted, &ranges), report)
     }
 
@@ -4421,6 +4531,15 @@ impl DeterministicTraceRedactor {
                 continue;
             }
             let placeholder = state.placeholders.placeholder_for("local_path", prefix);
+            if state.edit_map.is_some() {
+                state.track_ranges(
+                    &output
+                        .match_indices(prefix)
+                        .map(|(start, matched)| start..start + matched.len())
+                        .collect::<Vec<_>>(),
+                    &placeholder,
+                );
+            }
             output = output.replace(prefix, &placeholder);
             for _ in 0..count {
                 report.increment("local_path");
@@ -4440,9 +4559,45 @@ impl DeterministicTraceRedactor {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct RedactionState {
+    edit_map: Option<crate::private_edit_map::EditMap>,
     placeholders: PlaceholderMap,
+}
+
+impl RedactionState {
+    fn track_ranges(&mut self, ranges: &[std::ops::Range<usize>], replacement: &str) {
+        if self.edit_map.is_none() {
+            return;
+        }
+        let mut ranges = ranges.to_vec();
+        ranges.sort_by_key(|r| r.start);
+        let mut end = 0;
+        let mut edits = Vec::new();
+        for range in ranges {
+            if range.start < end {
+                continue;
+            }
+            end = range.end;
+            edits.push(crate::token_distribution::RedactionEdit {
+                original: crate::token_distribution::ByteSpan {
+                    start: range.start as u64,
+                    end: range.end as u64,
+                },
+                replacement: replacement.as_bytes().to_vec(),
+            });
+        }
+        self.track_edits(&edits);
+    }
+    fn track_edits(&mut self, edits: &[crate::token_distribution::RedactionEdit]) {
+        if self
+            .edit_map
+            .as_mut()
+            .is_some_and(|map| map.apply(edits).is_none())
+        {
+            self.edit_map = None;
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -4488,6 +4643,31 @@ impl TraceRedactor for DeterministicTraceRedactor {
     async fn redact_trace(
         &self,
         trace: RawTraceContribution,
+    ) -> Result<TraceContributionEnvelope, TraceContributionError> {
+        self.redact_trace_internal(trace, None).await
+    }
+}
+impl DeterministicTraceRedactor {
+    /// Returns event-scoped private byte edits from the actual pipeline pass.
+    /// Missing maps mean unavailable provenance, never an unchanged event.
+    pub async fn redact_trace_with_edits(
+        &self,
+        trace: RawTraceContribution,
+    ) -> Result<
+        (
+            TraceContributionEnvelope,
+            BTreeMap<Uuid, crate::private_edit_map::PrivateRedactionEdits>,
+        ),
+        TraceContributionError,
+    > {
+        let mut maps = BTreeMap::new();
+        let envelope = self.redact_trace_internal(trace, Some(&mut maps)).await?;
+        Ok((envelope, maps))
+    }
+    async fn redact_trace_internal(
+        &self,
+        trace: RawTraceContribution,
+        mut maps: Option<&mut BTreeMap<Uuid, crate::private_edit_map::PrivateRedactionEdits>>,
     ) -> Result<TraceContributionEnvelope, TraceContributionError> {
         let mut report = RedactionReport::default();
         let mut state = RedactionState::default();
@@ -4569,6 +4749,9 @@ impl TraceRedactor for DeterministicTraceRedactor {
                     // `redact_text_through_prose_filter`: they share this
                     // helper so the pipeline a witness attests cannot drift
                     // from the one ingest runs.
+                    if maps.is_some() {
+                        state.edit_map = crate::private_edit_map::EditMap::new(content.len());
+                    }
                     let redacted = self
                         .redact_text_with_state_through_prose_filter(
                             &content,
@@ -4577,6 +4760,15 @@ impl TraceRedactor for DeterministicTraceRedactor {
                             &mut privacy_filter_summary,
                         )
                         .await?;
+                    if let Some(map) = state
+                        .edit_map
+                        .take()
+                        .and_then(|map| map.finish(redacted.as_bytes()))
+                    {
+                        if let Some(maps) = maps.as_deref_mut() {
+                            maps.insert(raw_event.event_id, map);
+                        }
+                    }
                     Some(redacted)
                 }
                 None => None,
@@ -7725,6 +7917,7 @@ fn apply_placeholder_regex(
     let mut result = String::with_capacity(input.len());
     let mut last_end = 0usize;
     let mut changed = false;
+    let mut edits = Vec::new();
 
     for mat in regex.find_iter(input) {
         let candidate = mat.as_str();
@@ -7734,6 +7927,15 @@ fn apply_placeholder_regex(
         result.push_str(&input[last_end..mat.start()]);
         let placeholder = state.placeholders.placeholder_for(label, candidate);
         result.push_str(&placeholder);
+        if state.edit_map.is_some() {
+            edits.push(crate::token_distribution::RedactionEdit {
+                original: crate::token_distribution::ByteSpan {
+                    start: mat.start() as u64,
+                    end: mat.end() as u64,
+                },
+                replacement: placeholder.as_bytes().to_vec(),
+            });
+        }
         last_end = mat.end();
         report.increment(label);
         report.add_pii_label(label);
@@ -7743,6 +7945,7 @@ fn apply_placeholder_regex(
     if !changed {
         return input.to_string();
     }
+    state.track_edits(&edits);
     result.push_str(&input[last_end..]);
     result
 }
@@ -8573,6 +8776,7 @@ mod tests {
             report.increment("privacy_filter:person_name");
             report.add_pii_label("person_name");
             Ok(Some(super::SafePrivacyFilterRedaction {
+                private_edits: None,
                 redacted_text: text.replace(CLASSIFIER_ONLY_PII, "<CLASSIFIER_NAME>"),
                 summary: super::SafePrivacyFilterSummary {
                     schema_version: 1,
@@ -8608,6 +8812,7 @@ mod tests {
         ) -> Result<Option<super::SafePrivacyFilterRedaction>, super::TraceContributionError>
         {
             Ok(Some(super::SafePrivacyFilterRedaction {
+                private_edits: None,
                 redacted_text: text.replace(CLASSIFIER_EMITS_HERE, EMITTED_CREDENTIAL),
                 summary: super::SafePrivacyFilterSummary::default(),
                 report: super::RedactionReport::default(),
@@ -10096,6 +10301,7 @@ mod tests {
                     report.increment("privacy_filter:private_email");
                     report.add_pii_label("private_email");
                     Ok(Some(SafePrivacyFilterRedaction {
+                        private_edits: None,
                         redacted_text: text.replace("jane@example.com", "[REDACTED:private_email]"),
                         summary: SafePrivacyFilterSummary {
                             schema_version: 1,
@@ -10281,6 +10487,7 @@ mod tests {
                 // that found nothing, on both the real field AND the
                 // canary probe text. Text is returned unchanged.
                 Ok(Some(SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: text.to_string(),
                     summary: SafePrivacyFilterSummary {
                         schema_version: 1,
@@ -10336,6 +10543,7 @@ mod tests {
             ) -> Result<Option<SafePrivacyFilterRedaction>, TraceContributionError> {
                 // A real 200 that found nothing: text returned unchanged.
                 Ok(Some(SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: text.to_string(),
                     summary: SafePrivacyFilterSummary {
                         schema_version: 1,
@@ -10438,6 +10646,7 @@ mod tests {
                     }
                 }
                 Ok(Some(SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: redacted,
                     summary: SafePrivacyFilterSummary {
                         schema_version: 1,
@@ -10512,6 +10721,7 @@ mod tests {
                     }
                 }
                 Ok(Some(SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: redacted,
                     summary: SafePrivacyFilterSummary {
                         schema_version: 1,
@@ -10584,6 +10794,7 @@ mod tests {
                 report.increment("privacy_filter:private_email");
                 report.add_pii_label("private_email");
                 Ok(Some(SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: text.replace("ada@example.com", "[REDACTED:private_email]"),
                     summary: SafePrivacyFilterSummary {
                         schema_version: 1,
@@ -10655,6 +10866,7 @@ mod tests {
                     report.increment("privacy_filter:private_email");
                     report.add_pii_label("private_email");
                     Ok(Some(SafePrivacyFilterRedaction {
+                        private_edits: None,
                         redacted_text: text
                             .replace("alice@example.com", "[REDACTED:private_email]"),
                         summary: SafePrivacyFilterSummary {
@@ -11505,6 +11717,7 @@ mod tests {
                 report.increment("privacy_filter:person_name");
                 report.add_pii_label("person_name");
                 Ok(Some(SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: text.replace("staging", "[REDACTED:person_name]"),
                     summary: SafePrivacyFilterSummary {
                         schema_version: 1,
@@ -11620,6 +11833,7 @@ mod tests {
                 report.increment("privacy_filter:private_email");
                 report.add_pii_label("private_email");
                 Ok(Some(SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: text.replace("jane@example.com", "[REDACTED:private_email]"),
                     summary: SafePrivacyFilterSummary {
                         schema_version: 1,

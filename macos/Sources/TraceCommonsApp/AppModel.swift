@@ -1537,6 +1537,62 @@ final class AppModel: ObservableObject {
         }
     }
 
+    @Published private(set) var tokenStorageNotice = ""
+    func setLocalTokenCapture(_ enabled: Bool) async {
+        guard !tokenContributionBusy, let client else { return }
+        tokenContributionBusy = true
+        tokenStorageNotice = ""
+        defer { tokenContributionBusy = false }
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try client.setSettings(["token_capture_enabled": enabled]) }
+        }.value
+        switch result {
+        case .success(let settings): daemonSettings = settings
+        case .failure: tokenStorageNotice = daemonSettings?.tokenStorage?.failureLine ?? ""
+        }
+    }
+    func cleanTokenStorage(discard: Bool) async {
+        guard !tokenContributionBusy, let client else { return }
+        tokenContributionBusy = true
+        tokenStorageNotice = ""
+        defer { tokenContributionBusy = false }
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try client.tokenStorageAction(discard: discard) }
+        }.value
+        switch result {
+        case .success(let status): daemonSettings?.tokenStorage = status
+        case .failure: tokenStorageNotice = daemonSettings?.tokenStorage?.failureLine ?? ""
+        }
+    }
+
+    @Published private(set) var tokenContributionBusy = false
+    @Published private(set) var tokenContributionSaveFailed = false
+
+    func setTokenContribution(_ enabled: Bool, disclosureConfirmed: Bool = false) async {
+        guard !tokenContributionBusy else { return }
+        tokenContributionSaveFailed = false
+        guard let client else {
+            daemonSettings?.tokenDistributionsContribution = nil
+            tokenContributionSaveFailed = true
+            return
+        }
+        tokenContributionBusy = true
+        defer { tokenContributionBusy = false }
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try client.setTokenContribution(enabled, disclosureConfirmed: disclosureConfirmed) }
+        }.value
+        switch result {
+        case .success(let settings):
+            daemonSettings = settings
+            refreshAudit()
+        case .failure:
+            if let confirmed = await Task.detached(operation: { try? client.settings() }).value {
+                daemonSettings = confirmed
+            }
+            tokenContributionSaveFailed = true
+        }
+    }
+
     // MARK: - Onboarding resume
 
     /// Whether onboarding has been walked to the end (the Done screen) for
@@ -2074,7 +2130,7 @@ final class AppModel: ObservableObject {
         /// The server withdrew it, and reported this tier. `nil` reach means
         /// the daemon sent a label this build does not know -- which is
         /// reported as not-knowable, never smoothed into the mild answer.
-        case withdrawn(WithdrawalReach?)
+        case withdrawn(WithdrawalReach?, String? = nil)
         /// The daemon has no account session, so the request was never made.
         case noAccountSession
         /// Anything else. Carries the daemon's fixed label, which by
@@ -2111,7 +2167,7 @@ final class AppModel: ObservableObject {
                 self.withdrawing.remove(id)
                 switch outcome {
                 case .success(let value):
-                    self.withdrawals[id] = .withdrawn(value.distributionReach)
+                    self.withdrawals[id] = .withdrawn(value.distributionReach, value.tokenDeletionNote)
                     self.refreshHistory()
                 case .failure(let error):
                     let label = (error as? DaemonClient.Failure)?.message ?? "withdraw-failed"

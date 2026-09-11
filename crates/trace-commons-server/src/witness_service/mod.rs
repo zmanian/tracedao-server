@@ -750,6 +750,23 @@ pub struct RedactedContribution {
 /// masked correction.
 #[async_trait]
 pub trait ContributionRedactor: Send + Sync {
+    /// Private event provenance, available only when every text stage supplied
+    /// exact byte replacements. Legacy redactors safely omit maps.
+    async fn redact_with_edits(
+        &self,
+        raw: RawTraceContribution,
+    ) -> Result<
+        (
+            RedactedContribution,
+            std::collections::BTreeMap<
+                uuid::Uuid,
+                trace_commons_protocol::private_edit_map::PrivateRedactionEdits,
+            >,
+        ),
+        SeamUnavailable,
+    > {
+        Ok((self.redact(raw).await?, std::collections::BTreeMap::new()))
+    }
     /// Redact `raw`. `Err` means the pass did not complete; there is no
     /// partial success.
     async fn redact(
@@ -804,6 +821,32 @@ impl PipelineContributionRedaction {
 
 #[async_trait]
 impl ContributionRedactor for PipelineContributionRedaction {
+    async fn redact_with_edits(
+        &self,
+        raw: RawTraceContribution,
+    ) -> Result<
+        (
+            RedactedContribution,
+            std::collections::BTreeMap<
+                uuid::Uuid,
+                trace_commons_protocol::private_edit_map::PrivateRedactionEdits,
+            >,
+        ),
+        SeamUnavailable,
+    > {
+        let (envelope, maps) = self
+            .redactor
+            .redact_trace_with_edits(raw)
+            .await
+            .map_err(|_| SeamUnavailable)?;
+        Ok((
+            RedactedContribution {
+                envelope,
+                policy_version: self.policy_version.clone(),
+            },
+            maps,
+        ))
+    }
     async fn redact(
         &self,
         raw: RawTraceContribution,
@@ -1147,6 +1190,7 @@ mod tests {
         > {
             Ok(Some(
                 trace_commons_protocol::trace_contribution::SafePrivacyFilterRedaction {
+                    private_edits: None,
                     redacted_text: text.replace(CLASSIFIER_ONLY_PII, "<PROSE_NAME>"),
                     summary: Default::default(),
                     report: RedactionReport::default(),
@@ -2139,6 +2183,7 @@ mod tests {
             > {
                 Ok(Some(
                     trace_commons_protocol::trace_contribution::SafePrivacyFilterRedaction {
+                        private_edits: None,
                         redacted_text: if text == SURVIVOR {
                             SECRET.into()
                         } else {
@@ -2230,6 +2275,191 @@ mod tests {
                 "an incomplete scan cannot speak for what it never examined"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn token_bundle_derives_and_certifies_the_receipt_bound_assistant_event() {
+        use crate::admission_evidence::AdmissionProviderTrust;
+        use ring::signature::KeyPair as _;
+        use trace_commons_protocol::admission::{AdmissionBinding, REQUEST_METADATA_KEY, hash_hex};
+        use trace_commons_protocol::token_distribution::*;
+        use trace_commons_protocol::trace_contribution::TraceContributionEventType;
+        let provider = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[9; 32]).unwrap();
+        let key = hex::encode(provider.public_key().as_ref());
+        let witness = Arc::new(TestSigner::new("token-bundle-fixture"));
+        struct MatchingEnclave(String);
+        #[async_trait]
+        impl Enclave for MatchingEnclave {
+            fn signing_address(&self) -> &str {
+                &self.0
+            }
+            async fn measurement(&self) -> Result<String, SeamUnavailable> {
+                Ok(MEASUREMENT.into())
+            }
+            async fn attestation_quote(&self, _: &[u8]) -> Result<Vec<u8>, SeamUnavailable> {
+                Ok(vec![1; 8])
+            }
+        }
+        let service = surface::WitnessService::new(
+            Arc::new(FullPipelineRedaction::new(
+                Vec::new(),
+                Arc::new(NameRemovingFilter),
+                PrivacyFilterBackendTag::SelfHosted,
+            )),
+            witness.clone(),
+            Arc::new(MatchingEnclave(witness.address())),
+            1024 * 1024,
+        )
+        .with_contribution_redactor(Arc::new(
+            PipelineContributionRedaction::with_privacy_filter(
+                Vec::new(),
+                Arc::new(NameRemovingFilter),
+                PrivacyFilterBackendTag::SelfHosted,
+            ),
+        ))
+        .with_admission_provider_trust(
+            AdmissionProviderTrust::new([key.clone()], Vec::new(), ["fixture-model".into()], 1)
+                .unwrap(),
+        );
+        let binding = AdmissionBinding {
+            account_anchor_sha256: "a".repeat(64),
+            nonce_hex: "c".repeat(64),
+            expires_at: chrono::Utc::now().timestamp() + 120,
+        };
+        let request_body = serde_json::json!({"model":"fixture-model","logprobs":true,"top_logprobs":1,"metadata":{REQUEST_METADATA_KEY:binding.encode().unwrap()},"messages":[{"role":"user","content":"hello"}]}).to_string();
+        let response_body = serde_json::json!({"id":"token-fixture-response","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"},"logprobs":{"content":[{"token":"hello","bytes":[104,101,108,108,111],"logprob":-1.25,"top_logprobs":[{"token":"hi","bytes":[104,105],"logprob":-2.5}]}]}}]}).to_string();
+        let receipt_text = format!(
+            "fixture-model:{}:{}",
+            hash_hex(request_body.as_bytes()),
+            hash_hex(response_body.as_bytes())
+        );
+        let mut request = contribution_request("unbound history");
+        let mut exchange = request.raw_contribution.events.pop().unwrap();
+        exchange.event_type = TraceContributionEventType::HttpExchange;
+        exchange.structured_payload =
+            serde_json::json!({"request":{"body":request_body},"response":{}});
+        exchange.content = Some(response_body);
+        request.raw_contribution.events = vec![exchange];
+        request.offered_receipt = Some(ReceiptPayload {
+            signature: hex::encode(provider.sign(receipt_text.as_bytes()).as_ref()),
+            signing_address: key,
+            signing_algo: crate::near_attestation::receipt::ReceiptAlgo::Ed25519,
+            signature_kind: crate::near_attestation::receipt::ReceiptSignatureKind::ProviderTee,
+            text: receipt_text,
+        });
+        let options = || token_bundle::TokenBundleOptions {
+            capture_store_id: "1".repeat(32),
+            capture_id: "2".repeat(32),
+            bundle_revision: "r1".into(),
+            restricted_token_consent: true,
+        };
+        let trust = AdmissionProviderTrust::new(
+            [request
+                .offered_receipt
+                .as_ref()
+                .unwrap()
+                .signing_address
+                .clone()],
+            Vec::new(),
+            ["fixture-model".into()],
+            1,
+        )
+        .unwrap();
+        let verified_call = crate::admission_evidence::verify_admission_call(
+            &request.raw_contribution,
+            request.offered_receipt.as_ref().unwrap(),
+            &trust,
+            chrono::Utc::now().timestamp(),
+            1024 * 1024,
+        )
+        .expect("provider source verifies");
+        let mut restricted = request.clone();
+        verified_call
+            .restrict_contribution(&mut restricted.raw_contribution)
+            .expect("source projection succeeds");
+        trace_commons_protocol::token_distribution_chat::extract_chat_tokens(
+            restricted.raw_contribution.events[0]
+                .content
+                .as_ref()
+                .unwrap()
+                .as_bytes(),
+            false,
+        )
+        .expect("token capture parses");
+        let result = service
+            .witness_token_bundle(request.clone(), options())
+            .await
+            .unwrap();
+        let envelope: TraceContributionEnvelope =
+            serde_json::from_slice(&result.contribution.envelope_bytes).unwrap();
+        let assistant = envelope
+            .events
+            .iter()
+            .find(|e| e.event_type == TraceContributionEventType::AssistantMessage)
+            .unwrap();
+        assert_eq!(assistant.redacted_content.as_deref(), Some("hello"));
+        let manifest = ContributionBundleManifest::decode(&result.manifest_bytes).unwrap();
+        assert!(
+            manifest
+                .envelope_digest
+                .matches(&result.contribution.envelope_bytes)
+        );
+        assert_eq!(
+            manifest.attachments[0].event_id,
+            assistant.event_id.to_string()
+        );
+        manifest
+            .verify_sanitized_attachment(
+                &manifest.attachments[0].artifact_id,
+                &result.attachment_bytes,
+                b"hello",
+            )
+            .unwrap();
+        verify_witness_certificate(
+            result.certificate.clone(),
+            &result.signature_hex,
+            Some(&pin(&witness)),
+            &result.manifest_bytes,
+        )
+        .unwrap();
+        verify_witness_certificate(
+            result.contribution.certificate.clone(),
+            &result.contribution.signature_hex,
+            Some(&pin(&witness)),
+            &result.contribution.envelope_bytes,
+        )
+        .unwrap();
+        let mut tampered = result.manifest_bytes.clone();
+        tampered.push(b' ');
+        assert!(
+            verify_witness_certificate(
+                result.certificate.clone(),
+                &result.signature_hex,
+                Some(&pin(&witness)),
+                &tampered
+            )
+            .is_err()
+        );
+        assert!(result.admission.is_some());
+        let mut no_consent = options();
+        no_consent.restricted_token_consent = false;
+        assert!(
+            service
+                .witness_token_bundle(request.clone(), no_consent)
+                .await
+                .is_err()
+        );
+        request.raw_contribution.events[0]
+            .content
+            .as_mut()
+            .unwrap()
+            .push(' ');
+        assert!(
+            service
+                .witness_token_bundle(request, options())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -2571,3 +2801,5 @@ mod tests {
         );
     }
 }
+
+pub mod token_bundle;

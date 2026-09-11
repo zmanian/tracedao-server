@@ -357,3 +357,56 @@ pub async fn witness_session(
 
     transport::witness_contribution(transport, &verified, raw, attested, granted).await
 }
+
+/// Inputs for an explicitly approved token-bundle witness request.
+pub struct TokenBundleSession<'a> {
+    pub url: &'a str,
+    pub trust: &'a WitnessTrust,
+    pub now_unix: u64,
+    pub raw: trace_commons_protocol::trace_contribution::RawTraceContribution,
+    pub attested: transport::AttestedInference<'a>,
+    pub granted: &'a transport::GrantedConsent,
+    pub options: transport::TokenBundleRequest,
+}
+
+/// Perform the same nonce, measurement and signing-key checks as ordinary
+/// witnessing before transmitting any raw capture bytes.
+pub async fn witness_token_session(
+    transport: &transport::HttpWitnessTransport,
+    request: TokenBundleSession<'_>,
+) -> Result<crate::token_bundle::CertifiedBundleUpload, WitnessTrustError> {
+    use transport::WitnessTransport;
+    if !request.trust.is_pinned() {
+        return Err(WitnessTrustError::WitnessMeasurementUnpinned {
+            control: WITNESS_EXPECTED_MEASUREMENT_CONTROL,
+            reported: None,
+        });
+    }
+    if !request.options.restricted_token_consent || request.attested.receipt.is_none() {
+        return Err(WitnessTrustError::WitnessAdmissionEvidenceRefused);
+    }
+    crate::envelope::raw_contribution_size_ok(&request.raw)
+        .map_err(|_| WitnessTrustError::WitnessPayloadTooLarge)?;
+    let nonce = transport::WitnessNonce::fresh()?;
+    let evidence = transport.attestation(&nonce).await?;
+    let quote = hex::decode(evidence.quote_hex.trim())
+        .map_err(|_| WitnessTrustError::WitnessQuoteUnverified)?;
+    let collateral = transport.collateral(&quote).await?;
+    let verified = verify::verify_witness(
+        request.url,
+        &evidence,
+        &collateral,
+        &nonce,
+        request.now_unix,
+        request.trust,
+    )?;
+    transport
+        .witness_token_contribution(
+            &verified,
+            request.raw,
+            request.attested,
+            request.granted,
+            request.options,
+        )
+        .await
+}

@@ -387,6 +387,7 @@ public sealed class PreviewSheetViewModel : INotifyPropertyChanged, IDisposable
     /// schema, consent and privacy metadata. Only a preview knows it, which is
     /// why only this screen prints it.
     /// </remarks>
+    public string ProbabilitySummary => _summary?.ProbabilitySummary ?? string.Empty;
     public string WouldSendText =>
         _summary is null ? "—" : QueueEntryViewModel.FormatBytes(_summary.WouldSendBytes);
 
@@ -1111,6 +1112,7 @@ public sealed class PreviewSheetViewModel : INotifyPropertyChanged, IDisposable
         }
 
         Raise(nameof(WouldSendText));
+        Raise(nameof(ProbabilitySummary));
         Raise(nameof(RawSessionText));
         Raise(nameof(ScrubbingFoundText));
         Raise(nameof(NothingMatched));

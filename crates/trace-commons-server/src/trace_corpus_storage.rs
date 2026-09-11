@@ -2170,6 +2170,105 @@ pub struct TraceArtifactInvalidationCounts {
 
 #[async_trait]
 pub trait TraceCorpusStore: Send + Sync {
+    fn supports_token_bundles(&self) -> bool {
+        false
+    }
+    async fn publish_token_object(
+        &self,
+        _tenant: &str,
+        _submission: Uuid,
+        _revision: &str,
+        _owner: &str,
+        _artifact: &str,
+        _store: &dyn crate::trace_artifact_store::TraceArtifactStore,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn get_token_bundle_for_export(
+        &self,
+        _tenant: &str,
+        _submission: Uuid,
+        _revision: &str,
+    ) -> Result<Option<crate::token_bundle_store::StoredTokenBundle>, DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn process_token_bundles(
+        &self,
+        _tenant: &str,
+        _store: &dyn crate::trace_artifact_store::TraceArtifactStore,
+    ) -> Result<usize, DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn query_token_bundles(
+        &self,
+        _tenant: &str,
+        _owner: Option<&str>,
+        _query: &crate::token_bundle_store::TokenBundleQuery,
+    ) -> Result<Vec<crate::token_bundle_store::TokenBundleIndexEntry>, DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn delete_token_objects(
+        &self,
+        _tenant: &str,
+        _submission: Uuid,
+        _revision: &str,
+        _held_policies: &[String],
+        _store: &dyn crate::trace_artifact_store::TraceArtifactStore,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn begin_token_bundle(
+        &self,
+        _bundle: crate::token_bundle_store::StoredTokenBundle,
+    ) -> Result<crate::token_bundle_store::StoredTokenBundle, DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn get_token_bundle(
+        &self,
+        _tenant: &str,
+        _submission: Uuid,
+        _revision: &str,
+        _owner: &str,
+    ) -> Result<Option<crate::token_bundle_store::StoredTokenBundle>, DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn stage_token_object(
+        &self,
+        _tenant: &str,
+        _submission: Uuid,
+        _revision: &str,
+        _owner: &str,
+        _object: crate::token_bundle_store::StoredTokenObject,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn commit_token_bundle(
+        &self,
+        _tenant: &str,
+        _submission: Uuid,
+        _revision: &str,
+        _owner: &str,
+        _receipt: trace_commons_protocol::token_distribution::DurableBundleReceipt,
+    ) -> Result<trace_commons_protocol::token_distribution::DurableBundleReceipt, DatabaseError>
+    {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn pending_token_bundle_deletions(
+        &self,
+        _tenant: &str,
+        _submission: Option<Uuid>,
+    ) -> Result<Vec<crate::token_bundle_store::StoredTokenBundle>, DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
+    async fn mark_token_object_deleted(
+        &self,
+        _tenant: &str,
+        _submission: Uuid,
+        _revision: &str,
+        _artifact: &str,
+    ) -> Result<(), DatabaseError> {
+        Err(DatabaseError::Query("TokenBundleStorageUnavailable".into()))
+    }
     async fn upsert_trace_submission(
         &self,
         submission: TraceSubmissionWrite,

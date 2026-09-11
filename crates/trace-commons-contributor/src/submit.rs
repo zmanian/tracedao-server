@@ -427,6 +427,7 @@ pub struct SubmitContext<'a> {
     canary_runs: u32,
     approved_envelope: Option<TraceContributionEnvelope>,
     approved_witness: Option<WitnessedEnvelope>,
+    approved_token_bundle: Option<crate::token_bundle::TokenBundleReview>,
     /// What the last `submit_one`'s receipt fetch produced, for the daemon to
     /// correct the attestation mark after an upload. Reset at the start of
     /// each `submit_one`, set by `witness_envelope` when it runs.
@@ -483,6 +484,7 @@ impl<'a> SubmitContext<'a> {
             canary_runs: 0,
             approved_envelope: None,
             approved_witness: None,
+            approved_token_bundle: None,
             last_receipt_shipped: ReceiptShipped::NoCall,
             #[cfg(test)]
             receipt_override: None,
@@ -536,6 +538,7 @@ impl<'a> SubmitContext<'a> {
     pub fn use_approved_envelope(&mut self, envelope: Option<TraceContributionEnvelope>) {
         self.approved_envelope = envelope;
         self.approved_witness = None;
+        self.approved_token_bundle = None;
     }
 
     /// One-shot witnessed artifact. Caller has checked the atomic record's pin
@@ -547,6 +550,178 @@ impl<'a> SubmitContext<'a> {
         self.approved_witness = Some(response);
         self.invalidate_claim();
         Ok(())
+    }
+
+    pub(crate) fn use_approved_token_bundle(
+        &mut self,
+        bundle: Option<crate::token_bundle::TokenBundleReview>,
+    ) {
+        self.approved_token_bundle = bundle;
+    }
+    pub(crate) async fn prepare_token_review(
+        &mut self,
+        transcript: &crate::source::SessionTranscript,
+        control: &crate::token_capture_client::TokenCaptureClient,
+        session: &str,
+    ) -> Result<(
+        WitnessedEnvelope,
+        InferenceAttestationRecord,
+        crate::token_bundle::TokenBundleReview,
+    )> {
+        use crate::token_bundle::*;
+        let settings = self
+            .cfg
+            .witness
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("witness-not-configured"))?;
+        let trust = settings
+            .trust()
+            .map_err(|_| anyhow::anyhow!("witness_expected_measurement_malformed"))?;
+        if !trust.is_pinned() {
+            anyhow::bail!("witness_expected_measurement");
+        }
+        let call = transcript
+            .attested_call
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("token-capture-source-unavailable"))?;
+        let token = self
+            .ensure_claim(Utc::now(), &transcript.session_hash)
+            .await?
+            .map_err(|_| anyhow::anyhow!("witness-claim-unavailable"))?;
+        validate_review_grant(&self.effective_cfg, &token, Utc::now())?;
+        let ingest = build_ingest_client(self.cfg, &token)?;
+        let capability = ingest
+            .call_bytes(reqwest::Method::GET, "/v1/token-bundles", &[], &[], &[])
+            .await
+            .map_err(|_| anyhow::anyhow!("token-bundles-unavailable"))?;
+        let capability: serde_json::Value = serde_json::from_str(&capability)?;
+        if capability["version"] != 1 || capability["policy"] != "token-distribution-restricted-v1"
+        {
+            anyhow::bail!("token-bundles-incompatible");
+        }
+        let destination: BundleDestination = serde_json::from_value(serde_json::json!({
+            "server_id": capability["server_id"],
+            "tenant_id": capability["tenant_id"],
+            "account_id": capability["account_id"],
+        }))?;
+        let lease = crate::daemon::token_capture::acquire(control, session, call).await?;
+        let lease_binding = lease.bundle_lease()?;
+        let lease_guard = match crate::token_review_lease::ReviewLeaseGuard::new(
+            &self.store.dir().join("token-bundles"),
+            lease_binding.clone(),
+        ) {
+            Ok(guard) => guard,
+            Err(error) => {
+                let _ = control.release(&lease_binding).await;
+                return Err(error);
+            }
+        };
+        let source = lease
+            .captures
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("token-capture-source-unavailable"))?;
+        let receipt = self
+            .inference_receipt_for(call)
+            .await
+            .map_err(|_| anyhow::anyhow!("admission_receipt_unavailable"))?;
+        let attested = crate::witness::transport::AttestedInference {
+            call,
+            receipt: Some(&receipt),
+        };
+        let raw = crate::envelope::build_raw_contribution_with_correction(
+            transcript,
+            &self.effective_cfg,
+            Utc::now(),
+            None,
+            None,
+        );
+        let raw = witness_input_for_profile(raw, &self.effective_cfg, true);
+        let (scopes, uses) = granted_consent_for(&self.effective_cfg, &token);
+        let granted = GrantedConsent { scopes, uses };
+        let transport = HttpWitnessTransport::new(
+            settings.url.clone(),
+            self.cfg.ingest_url.clone(),
+            std::sync::Arc::new(config_allowlist(self.cfg)),
+            std::time::Duration::from_secs(120),
+        )?
+        .with_admission_evidence(true);
+        let payload = crate::witness::witness_token_session(
+            &transport,
+            crate::witness::TokenBundleSession {
+                url: &settings.url,
+                trust: &trust,
+                now_unix: Utc::now().timestamp().max(0) as u64,
+                raw,
+                attested,
+                granted: &granted,
+                options: crate::witness::transport::TokenBundleRequest {
+                    capture_store_id: source.store_id.clone(),
+                    capture_id: source.capture_id.clone(),
+                    bundle_revision: Uuid::new_v4().to_string(),
+                    restricted_token_consent: true,
+                },
+            },
+        )
+        .await?;
+        let envelope = parse_witnessed_envelope(&payload.envelope)?;
+        ensure_certified_grant(&envelope, &token, Utc::now())?;
+        if envelope.submission_id != crate::source::submission_id_for(&transcript.session_hash) {
+            anyhow::bail!("witness-review-source-mismatch");
+        }
+        let redactor = build_redactor_with(
+            &self.effective_cfg,
+            transcript.cwd.as_deref(),
+            self.near_ai.clone(),
+        )
+        .map_err(|_| anyhow::anyhow!("pii-filter-unavailable"))?;
+        if residual_secret_refusal(&redactor, &envelope, &transcript.session_hash)?.is_some() {
+            anyhow::bail!("secret-leak-detected");
+        }
+        let manifest =
+            trace_commons_protocol::token_distribution::ContributionBundleManifest::decode(
+                &payload.manifest.envelope_bytes,
+            )?;
+        let response = payload.envelope.clone();
+        let record = inference_attestation_for(Some(call), Some(&receipt));
+        let journal = BundleJournal::open(&self.store.dir().join("token-bundles"))?;
+        let mut kept = 0usize;
+        let mut omitted = 0u64;
+        let mut alternatives = 0usize;
+        let mut omitted_alternatives = 0u64;
+        for bytes in payload.attachments.values() {
+            let attachment: trace_commons_protocol::token_distribution::SanitizedTokenAttachment =
+                serde_json::from_slice(bytes)?;
+            kept += attachment.records.len();
+            omitted += attachment.omitted_records;
+            alternatives += attachment
+                .records
+                .iter()
+                .map(|r| r.alternatives.len())
+                .sum::<usize>();
+            omitted_alternatives += attachment.omitted_alternatives;
+        }
+        let review = TokenBundleReview {
+            summary_line: Some(crate::witness_copy::token_review_summary(
+                kept,
+                omitted,
+                alternatives,
+                omitted_alternatives,
+            )),
+            journal_id: journal.prepare(manifest.clone(), destination, lease.bundle_lease()?)?,
+            manifest_digest: manifest.digest()?,
+            attachment_bytes: manifest.attachments.iter().map(|a| a.size_bytes).sum(),
+        };
+        let mut pin_guard =
+            crate::token_bundle::ReviewPinGuard::new(self.store.dir(), Some(&review));
+        journal.record_renewal(&lease_binding, Some(u64::try_from(lease.expires_at)?))?;
+        if let Err(error) = journal.approve_payload(review.journal_id, payload) {
+            let _ = journal.abandon_review(review.journal_id);
+            return Err(error);
+        }
+        lease_guard.adopted()?;
+        pin_guard.disarm();
+        self.last_receipt_shipped = ReceiptShipped::Attached;
+        Ok((response, record, review))
     }
 
     /// Explicit review only. Ordinary preview/card paths never call this.
@@ -948,7 +1123,9 @@ impl<'a> SubmitContext<'a> {
                     && ALREADY_SUBMITTED_STATUSES.contains(&r.status.as_str())
             })
             .max_by_key(|r| r.submitted_at);
-        if let Some(prior) = prior {
+        if let Some(prior) = prior
+            && self.approved_token_bundle.is_none()
+        {
             let remediating_quarantined =
                 opts.remediate_quarantined && prior.status == "quarantined";
             if !remediating_quarantined {
@@ -1236,6 +1413,37 @@ impl<'a> SubmitContext<'a> {
             return Ok(refused_for_size(&transcript.session_hash, size));
         }
 
+        if let Some(bundle) = self.approved_token_bundle.take() {
+            let journal =
+                crate::token_bundle::BundleJournal::open(&self.store.dir().join("token-bundles"))?;
+            let response = witnessed
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("bundle-review-stale"))?;
+            journal.validate_review(&bundle, &response.envelope_bytes)?;
+            let client = build_ingest_client(self.cfg, &token)?;
+            match journal.upload_approved(bundle.journal_id, &client).await {
+                Ok(_) => {
+                    let receipt = Receipt {
+                        submission_id: envelope.submission_id,
+                        session_hash: transcript.session_hash.clone(),
+                        source: transcript.source.into(),
+                        submitted_at: Utc::now(),
+                        status: "submitted".into(),
+                    };
+                    self.store.append_receipt(&receipt)?;
+                    self.receipts.push(receipt);
+                    return Ok(SubmitOutcome::Submitted {
+                        submission_id: envelope.submission_id,
+                        status: "submitted".into(),
+                    });
+                }
+                Err(_) => {
+                    return Ok(SubmitOutcome::Failed {
+                        reason_label: "token-bundle-upload-pending".into(),
+                    });
+                }
+            }
+        }
         let device = self
             .device
             .as_ref()

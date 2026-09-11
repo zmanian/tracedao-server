@@ -80,6 +80,7 @@
                 -->
                 <StackPanel Spacing="2">
                     <TextBlock Text="Would send" Style="{StaticResource TcEyebrowTextStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.ProbabilitySummary, Mode=OneWay}" TextWrapping="Wrap" />
                     <TextBlock Text="{x:Bind ViewModel.WouldSendText, Mode=OneWay}"
                                Style="{StaticResource TcMonoFigureTextStyle}" />
                 </StackPanel>

@@ -462,6 +462,15 @@ impl Uploader<'_, '_> {
             let result = self.approved_witness_for(entry);
             match result {
                 Ok(artifact) => {
+                    if artifact.token_bundle.is_some()
+                        != self.settings.token_distributions_contribution
+                    {
+                        return Ok(UploadDecision::ApprovalStale {
+                            reason_label: "token-distribution-consent-changed".into(),
+                        });
+                    }
+                    self.ctx
+                        .use_approved_token_bundle(artifact.token_bundle.clone());
                     if self
                         .ctx
                         .use_approved_witness(artifact.response().clone())
@@ -479,6 +488,11 @@ impl Uploader<'_, '_> {
                 }
             }
         } else {
+            if self.settings.token_distributions_contribution {
+                return Ok(UploadDecision::ApprovalStale {
+                    reason_label: "token-distribution-review-required".into(),
+                });
+            }
             match self.approved_envelope_for(entry) {
                 Ok(approved) => self.ctx.use_approved_envelope(approved),
                 Err(reason_label) => return Ok(UploadDecision::ApprovalStale { reason_label }),

@@ -522,6 +522,27 @@
                             <TextBlock Grid.Column="0" Text="{x:Bind Settings.InferenceEvidenceNoticeGlyph, Mode=OneWay}" Style="{StaticResource TcHeadingAlertTextStyle}" />
                             <TextBlock Grid.Column="1" Text="{x:Bind Settings.InferenceEvidenceNotice, Mode=OneWay}" Style="{StaticResource TcHeadingAlertTextStyle}" TextWrapping="Wrap" />
                         </Grid>
+                        <TextBlock Text="{x:Bind Settings.TokenContributionHeading}" Style="{StaticResource TcEyebrowTextStyle}" />
+                        <TextBlock Text="{x:Bind Settings.TokenContributionDisclosure}" TextWrapping="Wrap" />
+                        <TextBlock Text="{x:Bind Settings.TokenContributionCaptureNote}" TextWrapping="Wrap" />
+                        <TextBlock Text="{x:Bind Settings.TokenContributionScopeNote}" TextWrapping="Wrap" />
+                        <TextBlock Text="{x:Bind Settings.ProbabilityStorage.CaptureNotice, Mode=OneWay}" TextWrapping="Wrap" />
+            <Button Content="{x:Bind Settings.ProbabilityStorage.CaptureLabel, Mode=OneWay}" Click="OnLocalProbabilityCapture" />
+            <TextBlock Text="{x:Bind Settings.ProbabilityStorage.StateLine, Mode=OneWay}" TextWrapping="Wrap" />
+            <TextBlock Text="{x:Bind Settings.ProbabilityStorage.ScopeNote, Mode=OneWay}" TextWrapping="Wrap" />
+            <Button Content="{x:Bind Settings.ProbabilityStorage.CleanupLabel, Mode=OneWay}" Click="OnCleanProbabilityStorage" />
+            <Button Content="{x:Bind Settings.ProbabilityStorage.DiscardLabel, Mode=OneWay}" Click="OnDiscardProbabilityStorage" />
+            <TextBlock Text="{x:Bind Settings.TokenContributionState, Mode=OneWay}" TextWrapping="Wrap" />
+                        <Button Content="{x:Bind Settings.TokenContributionEnable, Mode=OneWay}"
+                                IsEnabled="{x:Bind Settings.TokenContributionControlsEnabled, Mode=OneWay}"
+                                Click="OnTokenContribution" />
+                        <Button Content="{x:Bind Settings.TokenContributionDisable}"
+                                IsEnabled="{x:Bind Settings.WitnessControlsEnabled, Mode=OneWay}"
+                                Click="OnDisableTokenContribution" />
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
+                            <TextBlock Grid.Column="0" Text="{x:Bind Settings.TokenContributionNoticeGlyph, Mode=OneWay}" Style="{StaticResource TcHeadingAlertTextStyle}" />
+                            <TextBlock Grid.Column="1" Text="{x:Bind Settings.TokenContributionNotice, Mode=OneWay}" Style="{StaticResource TcHeadingAlertTextStyle}" TextWrapping="Wrap" />
+                        </Grid>
                         <TextBlock Text="{x:Bind Settings.WitnessCertificateMeans, Mode=OneWay}"
                                    Style="{StaticResource TcCaptionTextStyle}"
                                    TextWrapping="Wrap" />

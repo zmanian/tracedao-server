@@ -167,7 +167,7 @@ jobs:
       - name: Create one database per suite
         run: |
           set -euo pipefail
-          for db in onboarding ledger migration ingest invite merge rls store; do
+          for db in onboarding ledger migration ingest invite merge rls store tokens; do
             PGPASSWORD=trace createdb -h 127.0.0.1 -U trace "admission_test_$db"
           done
       # Each step carries only the variables its own suite reads, NOT a job-wide
@@ -230,6 +230,17 @@ jobs:
       # and asserts the role it reaches is not a superuser and holds no
       # table-wide SELECT on trace_gate_decisions. Setting the variable to this
       # job's own URL is precisely the vacuous pass #751 resolved.
+      - name: synthetic token qualification matrix
+        run: python3 -m unittest discover -s scripts/token-distributions
+      - name: token bundle durability and withdrawal
+        run: cargo test --locked -p trace-commons-server --test token_bundle_pg
+        env:
+          TRACE_COMMONS_PG_TEST_DATABASE_URL: postgres://trace@127.0.0.1:5432/admission_test_tokens
+      - name: token bundle HTTP lost-response recovery
+        run: cargo test --locked -p trace-commons-server --bin trace-commons-ingest token_bundle_http_journey
+        env:
+          TRACE_COMMONS_PG_TEST_DATABASE_URL: postgres://trace@127.0.0.1:5432/admission_test_tokens
+          TRACE_COMMONS_BUNDLE_SERVER_ID: journey-server
       - name: trace_corpus_pg_store
         run: cargo test -p trace-commons-server --test trace_corpus_pg_store
         env:
@@ -273,7 +284,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for db in onboarding ledger migration ingest invite merge rls store; do
+          for db in onboarding ledger migration ingest invite merge rls store tokens; do
             n=$(PGPASSWORD=trace psql -qtA -h 127.0.0.1 -U trace postgres \
                   -c "SELECT xact_commit FROM pg_stat_database WHERE datname='admission_test_$db';")
             echo "admission_test_$db committed ${n:-0} transactions"

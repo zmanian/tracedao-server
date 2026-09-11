@@ -21,6 +21,7 @@ namespace TraceCommons.App.Controls;
 /// </summary>
 public sealed partial class SettingsView : UserControl
 {
+    private bool _tokenContributionDialogOpen;
     private bool _inferenceEvidenceDialogOpen;
 
     public SettingsView(DaemonHost host)
@@ -106,6 +107,67 @@ public sealed partial class SettingsView : UserControl
         finally
         {
             _inferenceEvidenceDialogOpen = false;
+        }
+    }
+    private async void OnLocalProbabilityCapture(object sender, RoutedEventArgs e) {
+        if (Settings.ProbabilityStorage is not { } storage) return;
+        if (storage.CaptureEnabled) { await Settings.SetLocalProbabilityCaptureAsync(false); return; }
+        var dialog = new ContentDialog { XamlRoot = XamlRoot, Title = storage.CaptureLabel,
+            Content = storage.CaptureConfirmation, PrimaryButtonText = storage.CaptureLabel,
+            CloseButtonText = storage.CancelLabel, DefaultButton = ContentDialogButton.Close };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary) await Settings.SetLocalProbabilityCaptureAsync(true);
+    }
+    private async void OnCleanProbabilityStorage(object sender, RoutedEventArgs e) {
+        await Settings.CleanProbabilityStorageAsync(false);
+    }
+    private async void OnDiscardProbabilityStorage(object sender, RoutedEventArgs e) {
+        if (Settings.ProbabilityStorage is not { } storage) return;
+        var dialog = new ContentDialog { XamlRoot = XamlRoot, Title = storage.DiscardLabel,
+            Content = storage.DiscardConfirmation, PrimaryButtonText = storage.ConfirmLabel,
+            CloseButtonText = storage.CancelLabel, DefaultButton = ContentDialogButton.Close };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary) await Settings.CleanProbabilityStorageAsync(true);
+    }
+    private async void OnDisableTokenContribution(object sender, RoutedEventArgs e)
+    {
+        await Settings.SetTokenContributionAsync(false);
+    }
+
+    private async void OnTokenContribution(object sender, RoutedEventArgs e)
+    {
+        if (_tokenContributionDialogOpen || !Settings.TokenContributionControlsEnabled)
+        {
+            return;
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = Settings.TokenContributionHeading,
+            Content = new ScrollViewer
+            {
+                Content = new TextBlock
+                {
+                    Text = string.Join("\n\n", Settings.TokenContributionDisclosure,
+                        Settings.TokenContributionCaptureNote, Settings.TokenContributionScopeNote),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+            },
+            PrimaryButtonText = Settings.TokenContributionConfirm,
+            CloseButtonText = Settings.TokenContributionCancel,
+            DefaultButton = ContentDialogButton.Close,
+        };
+
+        _tokenContributionDialogOpen = true;
+        try
+        {
+            if (await DialogGuard.ShowOnceAsync(dialog) == ContentDialogResult.Primary)
+            {
+                await Settings.SetTokenContributionAsync(true, disclosureConfirmed: true);
+            }
+        }
+        finally
+        {
+            _tokenContributionDialogOpen = false;
         }
     }
 

@@ -57,7 +57,8 @@ public sealed class WithdrawalAttempt
 
     public static WithdrawalAttempt InFlight() => new(WithdrawalState.InFlight, null, null);
 
-    public static WithdrawalAttempt Done(string? reach) => new(WithdrawalState.Done, reach, null);
+    public string? TokenDeletionNote { get; private set; }
+    public static WithdrawalAttempt Done(string? reach, string? note = null) => new(WithdrawalState.Done, reach, null) { TokenDeletionNote = note };
 
     public static WithdrawalAttempt Failed(string? label) => new(WithdrawalState.Failed, null, label);
 }
@@ -206,7 +207,7 @@ public sealed class HistoryRecordViewModel
     /// </remarks>
     public string WithdrawOutcomeText => _attempt?.State switch
     {
-        WithdrawalState.Done => WithdrawCopy.ResultSentence(_attempt.Reach),
+        WithdrawalState.Done => WithdrawCopy.ResultSentence(_attempt.Reach) + (string.IsNullOrEmpty(_attempt.TokenDeletionNote) ? "" : "\n" + _attempt.TokenDeletionNote),
         WithdrawalState.Failed => WithdrawCopy.FailureSentence(_attempt.Label),
         _ => string.Empty,
     };

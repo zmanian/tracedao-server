@@ -1203,6 +1203,7 @@ struct WhatsInItTab: View {
                 LabeledContent("Turns recorded", value: "\(summary.eventCount)")
                 LabeledContent("Session on disk", value: Format.bytes(summary.rawSessionBytes))
                 LabeledContent("Would send", value: Format.bytes(summary.wouldSendBytes))
+                if let probabilities = summary.tokenDistributionSummary { Text(probabilities) }
                 Text("""
                 "Would send" is usually larger than the file on disk: a redacted \
                 envelope also carries schema, consent and privacy metadata the raw \
